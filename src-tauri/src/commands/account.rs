@@ -168,7 +168,7 @@ pub fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String>
             }
             #[cfg(windows)]
             {
-                let _ = std::process::Command::new("taskkill")
+                let _ = crate::commands::process::windows_system32_command("taskkill.exe")
                     .args(["/F", "/PID", &pid.to_string()])
                     .output();
             }
@@ -324,7 +324,7 @@ fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
         // Use tasklist on Windows
         // For Windows we might need a more precise WMI query to get command line args,
         // but for now we look for codex.exe PIDs and verify they're not ours
-        let output = std::process::Command::new("tasklist")
+        let output = crate::commands::process::windows_system32_command("tasklist.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
             .output()?;
