@@ -662,6 +662,17 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
 
         if has_window || has_renderer || has_app_server {
             active_pids.push(process.process_id);
+            continue;
+        }
+
+        // The markers above only exist for the Electron desktop app. A CLI
+        // session (npm/standalone codex.exe running in a terminal) has no
+        // window title and no helper children, so it must be detected by
+        // install location instead: desktop builds live under the app
+        // installer/package directories, while a codex.exe anywhere else is a
+        // live CLI process that should block switching.
+        if is_windows_codex_cli_process(process) && !command.contains("app-server") {
+            active_pids.push(process.process_id);
         } else {
             // Ignore stale helper trees left behind after the window has already closed.
             ignored_count += 1;
@@ -713,6 +724,20 @@ fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
     }
 
     name == "chatgpt.exe" && is_windows_codex_package_chatgpt_process(process)
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_codex_cli_process(process: &WindowsCodexProcess) -> bool {
+    if !process.name.eq_ignore_ascii_case("codex.exe") {
+        return false;
+    }
+
+    let executable_path = normalize_windows_path(&process.executable_path);
+    let command = normalize_windows_path(&process.command_line);
+    let is_desktop_install =
+        |value: &str| value.contains("\\programs\\codex\\") || value.contains("\\windowsapps\\");
+
+    !is_desktop_install(&executable_path) && !is_desktop_install(&command)
 }
 
 #[cfg(any(windows, test))]
@@ -1053,6 +1078,40 @@ mod tests {
         ];
 
         assert_eq!(classify_windows_codex_processes(&processes), (vec![], 2));
+    }
+
+    #[test]
+    fn detects_windows_cli_sessions_as_active() {
+        let processes = vec![
+            windows_process(
+                "codex.exe",
+                100,
+                1,
+                r"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe",
+                r#"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe"#,
+                "",
+            ),
+            // IDE plugin instances stay ignored even though they are CLI binaries.
+            windows_process(
+                "codex.exe",
+                200,
+                1,
+                r"C:\Users\test\.antigravity-ide\extensions\openai.chatgpt-26.5721.30844-win32-x64\bin\windows-x86_64\codex.exe",
+                r#"c:\Users\test\.antigravity-ide\extensions\openai.chatgpt-26.5721.30844-win32-x64\bin\windows-x86_64\codex.exe -c feature_flag"#,
+                "",
+            ),
+            // Background app-server instances do not block switching.
+            windows_process(
+                "codex.exe",
+                300,
+                1,
+                r"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe",
+                r#"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe app-server"#,
+                "",
+            ),
+        ];
+
+        assert_eq!(classify_windows_codex_processes(&processes), (vec![100], 2));
     }
 
     #[test]
