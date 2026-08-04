@@ -17,6 +17,45 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// `powershell.exe` is resolved by absolute path because some systems do not
+/// have `System32\WindowsPowerShell\v1.0` on `PATH` (e.g. PowerShell 7-only
+/// setups), which makes a bare `powershell.exe` spawn fail.
+#[cfg(windows)]
+fn windows_powershell_command() -> Command {
+    let absolute = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .filter(|path| path.is_file());
+
+    match absolute {
+        Some(path) => Command::new(path),
+        None => Command::new("powershell.exe"),
+    }
+}
+
+/// Same PATH caveat as [`windows_powershell_command`], for tools that live
+/// directly in `System32` (`tasklist`, `taskkill`, `cmd`).
+#[cfg(windows)]
+pub(crate) fn windows_system32_command(executable: &str) -> Command {
+    let absolute = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join(executable)
+        })
+        .filter(|path| path.is_file());
+
+    match absolute {
+        Some(path) => Command::new(path),
+        None => Command::new(executable),
+    }
+}
+
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -273,7 +312,7 @@ fn force_kill_process(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        let killed = Command::new("taskkill")
+        let killed = windows_system32_command("taskkill.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .status()
@@ -346,7 +385,7 @@ fn process_exists(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        return Command::new("tasklist")
+        return windows_system32_command("tasklist.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
@@ -570,7 +609,7 @@ Get-CimInstance Win32_Process |
   ConvertTo-Json -Compress
 "#;
 
-    let output = Command::new("powershell.exe")
+    let output = windows_powershell_command()
         .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
@@ -1207,7 +1246,7 @@ if ($null -eq $app) { exit 1 }
 Start-Process ("shell:AppsFolder\" + $app.AppID)
 "#;
 
-    let mut command = Command::new("powershell.exe");
+    let mut command = windows_powershell_command();
     command.creation_flags(CREATE_NO_WINDOW);
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     command_succeeds(&mut command)
@@ -1238,7 +1277,7 @@ fn find_windows_codex_shortcuts() -> Vec<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn open_windows_shortcut(path: &std::path::Path) -> bool {
-    let mut command = Command::new("cmd.exe");
+    let mut command = windows_system32_command("cmd.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.arg("/C").arg("start").arg("").arg(path);
     command_succeeds(&mut command)
