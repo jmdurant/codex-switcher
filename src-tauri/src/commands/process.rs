@@ -17,6 +17,45 @@ use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
+/// `powershell.exe` is resolved by absolute path because some systems do not
+/// have `System32\WindowsPowerShell\v1.0` on `PATH` (e.g. PowerShell 7-only
+/// setups), which makes a bare `powershell.exe` spawn fail.
+#[cfg(windows)]
+fn windows_powershell_command() -> Command {
+    let absolute = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join("WindowsPowerShell")
+                .join("v1.0")
+                .join("powershell.exe")
+        })
+        .filter(|path| path.is_file());
+
+    match absolute {
+        Some(path) => Command::new(path),
+        None => Command::new("powershell.exe"),
+    }
+}
+
+/// Same PATH caveat as [`windows_powershell_command`], for tools that live
+/// directly in `System32` (`tasklist`, `taskkill`, `cmd`).
+#[cfg(windows)]
+pub(crate) fn windows_system32_command(executable: &str) -> Command {
+    let absolute = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::PathBuf::from(root)
+                .join("System32")
+                .join(executable)
+        })
+        .filter(|path| path.is_file());
+
+    match absolute {
+        Some(path) => Command::new(path),
+        None => Command::new(executable),
+    }
+}
+
 #[cfg(any(windows, test))]
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -273,7 +312,7 @@ fn force_kill_process(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        let killed = Command::new("taskkill")
+        let killed = windows_system32_command("taskkill.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/T", "/PID", &pid.to_string()])
             .status()
@@ -346,7 +385,7 @@ fn process_exists(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
-        return Command::new("tasklist")
+        return windows_system32_command("tasklist.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
@@ -570,7 +609,7 @@ Get-CimInstance Win32_Process |
   ConvertTo-Json -Compress
 "#;
 
-    let output = Command::new("powershell.exe")
+    let output = windows_powershell_command()
         .creation_flags(CREATE_NO_WINDOW)
         .args([
             "-NoProfile",
@@ -623,6 +662,17 @@ fn classify_windows_codex_processes(processes: &[WindowsCodexProcess]) -> (Vec<u
 
         if has_window || has_renderer || has_app_server {
             active_pids.push(process.process_id);
+            continue;
+        }
+
+        // The markers above only exist for the Electron desktop app. A CLI
+        // session (npm/standalone codex.exe running in a terminal) has no
+        // window title and no helper children, so it must be detected by
+        // install location instead: desktop builds live under the app
+        // installer/package directories, while a codex.exe anywhere else is a
+        // live CLI process that should block switching.
+        if is_windows_codex_cli_process(process) && !command.contains("app-server") {
+            active_pids.push(process.process_id);
         } else {
             // Ignore stale helper trees left behind after the window has already closed.
             ignored_count += 1;
@@ -674,6 +724,20 @@ fn is_windows_codex_root_process(process: &WindowsCodexProcess) -> bool {
     }
 
     name == "chatgpt.exe" && is_windows_codex_package_chatgpt_process(process)
+}
+
+#[cfg(any(windows, test))]
+fn is_windows_codex_cli_process(process: &WindowsCodexProcess) -> bool {
+    if !process.name.eq_ignore_ascii_case("codex.exe") {
+        return false;
+    }
+
+    let executable_path = normalize_windows_path(&process.executable_path);
+    let command = normalize_windows_path(&process.command_line);
+    let is_desktop_install =
+        |value: &str| value.contains("\\programs\\codex\\") || value.contains("\\windowsapps\\");
+
+    !is_desktop_install(&executable_path) && !is_desktop_install(&command)
 }
 
 #[cfg(any(windows, test))]
@@ -1017,6 +1081,40 @@ mod tests {
     }
 
     #[test]
+    fn detects_windows_cli_sessions_as_active() {
+        let processes = vec![
+            windows_process(
+                "codex.exe",
+                100,
+                1,
+                r"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe",
+                r#"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe"#,
+                "",
+            ),
+            // IDE plugin instances stay ignored even though they are CLI binaries.
+            windows_process(
+                "codex.exe",
+                200,
+                1,
+                r"C:\Users\test\.antigravity-ide\extensions\openai.chatgpt-26.5721.30844-win32-x64\bin\windows-x86_64\codex.exe",
+                r#"c:\Users\test\.antigravity-ide\extensions\openai.chatgpt-26.5721.30844-win32-x64\bin\windows-x86_64\codex.exe -c feature_flag"#,
+                "",
+            ),
+            // Background app-server instances do not block switching.
+            windows_process(
+                "codex.exe",
+                300,
+                1,
+                r"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe",
+                r#"C:\Users\test\AppData\Roaming\npm\node_modules\@openai\codex\node_modules\@openai\codex-win32-x64\vendor\x86_64-pc-windows-msvc\codex\codex.exe app-server"#,
+                "",
+            ),
+        ];
+
+        assert_eq!(classify_windows_codex_processes(&processes), (vec![100], 2));
+    }
+
+    #[test]
     fn windows_codex_shortcut_filter_excludes_switcher() {
         assert!(super::is_windows_codex_shortcut_name("Codex.lnk"));
         assert!(super::is_windows_codex_shortcut_name("OpenAI Codex.lnk"));
@@ -1207,7 +1305,7 @@ if ($null -eq $app) { exit 1 }
 Start-Process ("shell:AppsFolder\" + $app.AppID)
 "#;
 
-    let mut command = Command::new("powershell.exe");
+    let mut command = windows_powershell_command();
     command.creation_flags(CREATE_NO_WINDOW);
     command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
     command_succeeds(&mut command)
@@ -1238,7 +1336,7 @@ fn find_windows_codex_shortcuts() -> Vec<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn open_windows_shortcut(path: &std::path::Path) -> bool {
-    let mut command = Command::new("cmd.exe");
+    let mut command = windows_system32_command("cmd.exe");
     command.creation_flags(CREATE_NO_WINDOW);
     command.arg("/C").arg("start").arg("").arg(path);
     command_succeeds(&mut command)
