@@ -2,7 +2,7 @@
   "name": "codex-switcher",
   "private": true,
   "version": "0.2.12",
-  "description": "A multi-account manager for Codex CLI",
+  "description": "A multi-account manager for Codex, Antigravity, and agy",
   "type": "module",
   "scripts": {
     "dev": "vite",

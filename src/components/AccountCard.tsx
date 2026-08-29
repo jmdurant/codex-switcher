@@ -14,6 +14,7 @@ interface AccountCardProps {
   onWarmup: () => Promise<void>;
   onDelete: () => void;
   onRefresh: () => Promise<unknown>;
+  onRelogin?: () => void;
   onRename: (newName: string) => Promise<void>;
   switching?: boolean;
   codexRunning?: boolean;
@@ -100,6 +101,7 @@ export function AccountCard({
   onWarmup,
   onDelete,
   onRefresh,
+  onRelogin,
   onRename,
   switching,
   codexRunning = false,
@@ -452,6 +454,15 @@ export function AccountCard({
         >
           ⚡
         </button>
+        {account.auth_mode === "chat_g_p_t" && onRelogin && (
+          <button
+            onClick={onRelogin}
+            className="h-9 px-3 flex items-center justify-center text-xs font-medium rounded-lg bg-sky-50 dark:bg-sky-900/20 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-sky-700 dark:text-sky-300 transition-colors whitespace-nowrap"
+            title="Sign in again and replace this account's saved credentials"
+          >
+            Re-login
+          </button>
+        )}
         {onToggleAutoWarmup && (
           <button
             onClick={onToggleAutoWarmup}

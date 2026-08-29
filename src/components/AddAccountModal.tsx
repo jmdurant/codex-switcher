@@ -9,6 +9,8 @@ import {
 
 interface AddAccountModalProps {
   isOpen: boolean;
+  mode?: "add" | "relogin";
+  accountName?: string;
   onClose: () => void;
   onImportFile: (source: FileSource, name: string) => Promise<void>;
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
@@ -20,6 +22,8 @@ type Tab = "oauth" | "import";
 
 export function AddAccountModal({
   isOpen,
+  mode = "add",
+  accountName,
   onClose,
   onImportFile,
   onStartOAuth,
@@ -38,6 +42,7 @@ export function AddAccountModal({
   const tauriRuntime = isTauriRuntime();
 
   const resetForm = () => {
+    setActiveTab("oauth");
     setName("");
     setFileSource(null);
     setError(null);
@@ -58,7 +63,7 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
-      const info = await onStartOAuth(name.trim());
+      const info = await onStartOAuth(mode === "relogin" ? (accountName ?? "") : name.trim());
       setAuthUrl(info.auth_url);
       setOauthPending(true);
       setLoading(false);
@@ -106,7 +111,9 @@ export function AddAccountModal({
       <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-800">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Add Account</h2>
+          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+            {mode === "relogin" ? "Re-login Codex Account" : "Add Account"}
+          </h2>
           <button
             onClick={handleClose}
             className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
@@ -116,7 +123,7 @@ export function AddAccountModal({
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-gray-100 dark:border-gray-800">
+        {mode === "add" && <div className="flex border-b border-gray-100 dark:border-gray-800">
           {(["oauth", "import"] as Tab[]).map((tab) => (
             <button
               key={tab}
@@ -139,12 +146,12 @@ export function AddAccountModal({
               {tab === "oauth" ? "ChatGPT Login" : "Import File"}
             </button>
           ))}
-        </div>
+        </div>}
 
         {/* Content */}
         <div className="p-5 space-y-4">
           {/* Account name is optional; the backend derives one when blank. */}
-          <div>
+          {mode === "add" ? <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
               Account Name (optional)
             </label>
@@ -155,7 +162,17 @@ export function AddAccountModal({
               placeholder="Leave blank to use email"
               className="w-full px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-gray-500 focus:ring-1 focus:ring-gray-400 dark:focus:ring-gray-500 transition-colors"
             />
-          </div>
+          </div> : (
+            <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+              <p className="text-xs text-gray-500 dark:text-gray-400">Replacing credentials for</p>
+              <p className="mt-1 truncate text-sm font-medium text-gray-900 dark:text-gray-100">
+                {accountName}
+              </p>
+              <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+                Sign in to the same ChatGPT account. A different account will be rejected.
+              </p>
+            </div>
+          )}
 
           {/* Tab-specific content */}
           {activeTab === "oauth" && (
@@ -212,14 +229,14 @@ export function AddAccountModal({
                 </div>
               ) : (
                 <p>
-                  Click the button below to generate a login link.
+                  Click the button below to generate a {mode === "relogin" ? "re-login" : "login"} link.
                   You will need to open it in your browser to authenticate.
                 </p>
               )}
             </div>
           )}
 
-          {activeTab === "import" && (
+          {mode === "add" && activeTab === "import" && (
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
                 Select auth.json file
@@ -263,9 +280,9 @@ export function AddAccountModal({
             className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 text-white dark:text-gray-900 transition-colors disabled:opacity-50"
           >
             {loading
-              ? "Adding..."
+              ? mode === "relogin" ? "Starting..." : "Adding..."
               : activeTab === "oauth"
-                ? "Generate Login Link"
+                ? mode === "relogin" ? "Generate Re-login Link" : "Generate Login Link"
                 : "Import"}
           </button>
         </div>

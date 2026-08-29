@@ -1,5 +1,11 @@
 import React, { useCallback, useEffect, useState } from "react";
-import type { AccountInfo, AccountUsageStats, DockDisplayMode, UsageInfo } from "./types";
+import type {
+  AccountInfo,
+  AccountUsageStats,
+  AntigravityUsageInfo,
+  DockDisplayMode,
+  UsageInfo,
+} from "./types";
 import { invokeBackend, isTauriRuntime } from "./lib/platform";
 import {
   applyTheme,
@@ -18,6 +24,17 @@ const ACCOUNTS_CHANGED_EVENT = "accounts-changed";
 const SWITCH_ACCOUNT_BLOCKED_EVENT = "switch-account-blocked";
 // Mirrors the backend guard message in process.rs (ensure_codex_not_running).
 const CODEX_RUNNING_PREFIX = "Cannot switch accounts while";
+const HIDDEN_MODELS_STORAGE_KEY = "antigravity-hidden-model-ids";
+
+function visibleAntigravityModels(usage: AntigravityUsageInfo): AntigravityUsageInfo["models"] {
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(HIDDEN_MODELS_STORAGE_KEY) ?? "[]");
+    const hidden = new Set(Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : []);
+    return usage.models.filter((model) => !hidden.has(model.model_id));
+  } catch {
+    return usage.models;
+  }
+}
 
 function formatError(err: unknown): string {
   if (!err) return "Unknown error";
@@ -70,6 +87,17 @@ function formatResetAt(resetAt: number | null | undefined): string | null {
   return `${Math.floor(diff / 86_400)}d ${Math.floor((diff % 86_400) / 3600)}h`;
 }
 
+function formatAntigravityReset(resetAt: string | null): string | null {
+  if (!resetAt) return null;
+  const timestamp = new Date(resetAt).getTime();
+  if (Number.isNaN(timestamp)) return null;
+  const remaining = Math.ceil((timestamp - Date.now()) / 1000);
+  if (remaining <= 0) return "Resets now";
+  if (remaining < 3600) return `Resets in ${Math.floor(remaining / 60)}m`;
+  if (remaining < 86_400) return `Resets in ${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m`;
+  return `Resets in ${Math.floor(remaining / 86_400)}d ${Math.floor((remaining % 86_400) / 3600)}h`;
+}
+
 function formatTokens(tokens: number | null | undefined): string {
   if (tokens === null || tokens === undefined || !Number.isFinite(tokens)) return "--";
   const abs = Math.abs(tokens);
@@ -104,6 +132,52 @@ function retainUsageForAccounts(
   );
 }
 
+function trayRemainingPercent(account: AccountInfo, usageById: Record<string, UsageInfo>): number | null {
+  const usage = usageById[account.id];
+  if (!usage || usage.error) return null;
+
+  const used = usage.primary_used_percent ?? usage.secondary_used_percent;
+  return used === null || used === undefined || !Number.isFinite(used)
+    ? null
+    : Math.max(0, Math.min(100, 100 - used));
+}
+
+function trayResetAt(account: AccountInfo, usageById: Record<string, UsageInfo>): number | null {
+  const usage = usageById[account.id];
+  if (!usage || usage.error) return null;
+
+  const hasPrimaryWindow = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
+  const resetAt = hasPrimaryWindow ? usage.primary_resets_at : usage.secondary_resets_at;
+  return resetAt && Number.isFinite(resetAt) ? resetAt : null;
+}
+
+function compareTrayAccounts(
+  left: AccountInfo,
+  right: AccountInfo,
+  usageById: Record<string, UsageInfo>
+): number {
+  if (left.is_active !== right.is_active) return left.is_active ? -1 : 1;
+
+  const leftRemaining = trayRemainingPercent(left, usageById);
+  const rightRemaining = trayRemainingPercent(right, usageById);
+  const leftHasRemaining = leftRemaining !== null && leftRemaining > 0;
+  const rightHasRemaining = rightRemaining !== null && rightRemaining > 0;
+
+  if (leftHasRemaining !== rightHasRemaining) return leftHasRemaining ? -1 : 1;
+  if (leftHasRemaining && rightHasRemaining) {
+    const remainingDifference = rightRemaining - leftRemaining;
+    if (remainingDifference !== 0) return remainingDifference;
+
+    const leftResetAt = trayResetAt(left, usageById);
+    const rightResetAt = trayResetAt(right, usageById);
+    if (leftResetAt !== null && rightResetAt !== null) return leftResetAt - rightResetAt;
+    if (leftResetAt !== null) return -1;
+    if (rightResetAt !== null) return 1;
+  }
+
+  return left.name.localeCompare(right.name);
+}
+
 function TrayMenu() {
   const [accounts, setAccounts] = useState<AccountInfo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -111,6 +185,7 @@ function TrayMenu() {
   const [error, setError] = useState<string | null>(null);
   const [usageById, setUsageById] = useState<Record<string, UsageInfo>>({});
   const [statsById, setStatsById] = useState<Record<string, AccountUsageStats>>({});
+  const [antigravityUsage, setAntigravityUsage] = useState<AntigravityUsageInfo | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(readAutoWarmupAllEnabled);
   const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
@@ -189,6 +264,14 @@ function TrayMenu() {
     }
   }, []);
 
+  const loadAntigravityUsage = useCallback(async () => {
+    try {
+      setAntigravityUsage(await invokeBackend<AntigravityUsageInfo>("get_antigravity_usage"));
+    } catch {
+      setAntigravityUsage(null);
+    }
+  }, []);
+
   const loadDockDisplayMode = useCallback(async () => {
     try {
       const mode = await invokeBackend<DockDisplayMode | null>("get_dock_display_mode");
@@ -207,12 +290,13 @@ function TrayMenu() {
       setError(null);
       void loadUsage(list); // Don't block the list render on the usage calls.
       void loadActiveStats(list);
+      void loadAntigravityUsage();
     } catch (err) {
       setError(formatError(err));
     } finally {
       setLoading(false);
     }
-  }, [loadActiveStats, loadDockDisplayMode, loadUsage]);
+  }, [loadActiveStats, loadAntigravityUsage, loadDockDisplayMode, loadUsage]);
 
   // Manual refresh: re-pull accounts and actively fetch fresh usage once.
   const handleRefresh = useCallback(async () => {
@@ -222,13 +306,13 @@ function TrayMenu() {
       setAccounts(list);
       setUsageById((prev) => retainUsageForAccounts(prev, list));
       setError(null);
-      await Promise.all([loadUsage(list), loadActiveStats(list)]);
+      await Promise.all([loadUsage(list), loadActiveStats(list), loadAntigravityUsage()]);
     } catch (err) {
       setError(formatError(err));
     } finally {
       setRefreshing(false);
     }
-  }, [loadActiveStats, loadUsage]);
+  }, [loadActiveStats, loadAntigravityUsage, loadUsage]);
 
   const handleAutoWarmupToggle = useCallback(async () => {
     const next = !autoWarmupAllEnabled;
@@ -339,7 +423,7 @@ function TrayMenu() {
         <div className="flex h-6 w-6 items-center justify-center rounded-md bg-black text-xs font-bold text-white">
           C
         </div>
-        <span className="text-sm font-semibold">Codex Switcher</span>
+        <span className="text-sm font-semibold">AI Account Switcher</span>
         <button
           onClick={() => void handleAutoWarmupToggle()}
           disabled={accounts.length === 0}
@@ -380,7 +464,7 @@ function TrayMenu() {
         ) : (
           accounts
             .slice()
-            .sort((a, b) => (a.is_active ? -1 : b.is_active ? 1 : 0))
+            .sort((a, b) => compareTrayAccounts(a, b, usageById))
             .map((account, idx, sorted) => {
             const plan = formatPlan(account.plan_type);
             const usage = usageById[account.id];
@@ -516,6 +600,32 @@ function TrayMenu() {
             );
           })
         )}
+
+        {antigravityUsage && (
+          <div className="mt-2 border-t border-gray-100 px-2 pt-2 dark:border-gray-800">
+            <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+              Antigravity {antigravityUsage.plan_name ? `- ${antigravityUsage.plan_name}` : ""}
+            </div>
+            <div className="space-y-1.5">
+              {visibleAntigravityModels(antigravityUsage).map((model) => {
+                const tone = remainingTone(model.remaining_percent);
+                const reset = formatAntigravityReset(model.reset_at);
+                return (
+                  <div key={`${model.model_id}-${model.label}`}>
+                    <div className="flex justify-between gap-2 text-[11px] text-gray-600 dark:text-gray-300">
+                      <span className="truncate">{model.label}</span>
+                      <span className={tone.text}>{Math.round(model.remaining_percent)}%</span>
+                    </div>
+                    <div className="mt-0.5 h-1.5 overflow-hidden rounded-full bg-gray-200 dark:bg-gray-800">
+                      <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${model.remaining_percent}%` }} />
+                    </div>
+                    {reset && <div className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">{reset}</div>}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -557,7 +667,7 @@ function TrayMenu() {
           onClick={() => void invokeBackend("open_main_window")}
           className="flex-1 rounded-lg px-2 py-1.5 text-left text-sm transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
         >
-          Open Codex Switcher
+          Open AI Account Switcher
         </button>
         <button
           onClick={() => void invokeBackend("open_codex_app")}

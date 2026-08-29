@@ -14,7 +14,10 @@ use tauri::{
 
 use crate::{
     api::usage::get_account_usage,
-    auth::{get_account, get_accounts_file, load_accounts, load_app_settings},
+    auth::{
+        get_account, get_accounts_file, get_live_antigravity_usage, load_accounts,
+        load_app_settings, AntigravityUsageInfo,
+    },
     commands::{
         is_codex_running_switch_block, restore_main_window, switch_account_by_id,
         window::TRAY_WINDOW,
@@ -26,6 +29,8 @@ static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static ANTIGRAVITY_USAGE: LazyLock<Mutex<Option<AntigravityUsageInfo>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
@@ -33,6 +38,7 @@ const TRAY_REFRESH_EVENT: &str = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT: &str = "accounts-changed";
 const SWITCH_ACCOUNT_BLOCKED_EVENT: &str = "switch-account-blocked";
 const ACCOUNT_ITEM_PREFIX: &str = "account:";
+const ANTIGRAVITY_MENU_PREFIX: &str = "antigravity:";
 const OPEN_ITEM_ID: &str = "open";
 const OPEN_CODEX_ITEM_ID: &str = "open-codex";
 const QUIT_ITEM_ID: &str = "quit";
@@ -63,7 +69,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     let builder = TrayIconBuilder::with_id(TRAY_ID)
         .icon(icon)
-        .tooltip("Codex Switcher")
+        .tooltip("AI Account Switcher")
         .menu(&menu)
         .on_menu_event(handle_menu_event);
 
@@ -80,6 +86,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
 
     watch_accounts_file(app.clone());
     poll_active_account_usage(app.clone());
+    poll_antigravity_usage(app.clone());
     Ok(())
 }
 
@@ -108,7 +115,7 @@ fn create_tray_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     }
 
     let window = WebviewWindowBuilder::new(app, TRAY_WINDOW, WebviewUrl::App("tray.html".into()))
-        .title("Codex Switcher")
+        .title("AI Account Switcher")
         .inner_size(TRAY_WIDTH, TRAY_HEIGHT)
         .resizable(false)
         .decorations(false)
@@ -221,12 +228,14 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, store: &AccountsStore) -> tauri::R
         }
     }
 
+    append_antigravity_usage(app, &menu)?;
+
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     #[cfg(target_os = "macos")]
     append_dock_settings_menu(app, &menu)?;
     #[cfg(target_os = "macos")]
     menu.append(&PredefinedMenuItem::separator(app)?)?;
-    menu.append(&MenuItemBuilder::with_id(OPEN_ITEM_ID, "Open Codex Switcher").build(app)?)?;
+    menu.append(&MenuItemBuilder::with_id(OPEN_ITEM_ID, "Open AI Account Switcher").build(app)?)?;
     menu.append(&MenuItemBuilder::with_id(OPEN_CODEX_ITEM_ID, "Open Codex").build(app)?)?;
     menu.append(&MenuItemBuilder::with_id(QUIT_ITEM_ID, "Quit").build(app)?)?;
     Ok(menu)
@@ -270,6 +279,11 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         QUIT_ITEM_ID => app.exit(0),
         _ => {
+            if item_id.starts_with(ANTIGRAVITY_MENU_PREFIX) {
+                refresh_antigravity_usage(app.clone());
+                return;
+            }
+
             let Some(account_id) = item_id.strip_prefix(ACCOUNT_ITEM_PREFIX) else {
                 return;
             };
@@ -582,6 +596,110 @@ fn poll_active_account_usage<R: Runtime>(app: AppHandle<R>) {
 
         std::thread::sleep(Duration::from_secs(60));
     });
+}
+
+fn poll_antigravity_usage<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        if let Ok(usage) = tauri::async_runtime::block_on(get_live_antigravity_usage()) {
+            if let Ok(mut cache) = ANTIGRAVITY_USAGE.lock() {
+                *cache = Some(usage);
+            }
+            refresh_menu(&app);
+        }
+        std::thread::sleep(Duration::from_secs(60));
+    });
+}
+
+fn append_antigravity_usage<R: Runtime>(app: &AppHandle<R>, menu: &Menu<R>) -> tauri::Result<()> {
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(
+        &MenuItemBuilder::with_id("antigravity:refresh", "Antigravity / Gemini").build(app)?,
+    )?;
+
+    let usage = ANTIGRAVITY_USAGE
+        .lock()
+        .ok()
+        .and_then(|usage| usage.clone());
+    let Some(usage) = usage else {
+        menu.append(
+            &MenuItemBuilder::with_id("antigravity:status", "Checking live quota...")
+                .enabled(false)
+                .build(app)?,
+        )?;
+        return Ok(());
+    };
+
+    let models = default_antigravity_models(&usage);
+    if models.is_empty() {
+        menu.append(
+            &MenuItemBuilder::with_id("antigravity:status", "No model quota available")
+                .enabled(false)
+                .build(app)?,
+        )?;
+        return Ok(());
+    }
+
+    for model in models {
+        let label = format!("{}: {:.0}% remaining", model.label, model.remaining_percent);
+        menu.append(
+            &MenuItemBuilder::with_id(
+                format!("antigravity:model:{}", model.model_id),
+                menu_label(&label),
+            )
+            .enabled(false)
+            .build(app)?,
+        )?;
+    }
+    Ok(())
+}
+
+fn default_antigravity_models(
+    usage: &AntigravityUsageInfo,
+) -> Vec<&crate::auth::AntigravityModelUsage> {
+    ["flash", "pro", "claude"]
+        .into_iter()
+        .filter_map(|group| {
+            usage
+                .models
+                .iter()
+                .filter(|model| model.label.to_lowercase().contains(group))
+                .max_by(|left, right| compare_model_versions(&left.label, &right.label))
+        })
+        .collect()
+}
+
+fn refresh_antigravity_usage<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || {
+        if let Ok(usage) = tauri::async_runtime::block_on(get_live_antigravity_usage()) {
+            if let Ok(mut cache) = ANTIGRAVITY_USAGE.lock() {
+                *cache = Some(usage);
+            }
+        }
+        refresh_menu(&app);
+    });
+}
+
+fn compare_model_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    let numbers = |value: &str| {
+        value
+            .split(|character: char| !character.is_ascii_digit() && character != '.')
+            .filter(|part| !part.is_empty())
+            .map(|part| part.parse::<f64>().unwrap_or(0.0))
+            .collect::<Vec<_>>()
+    };
+    let left = numbers(left);
+    let right = numbers(right);
+    for index in 0..left.len().max(right.len()) {
+        match left
+            .get(index)
+            .unwrap_or(&0.0)
+            .total_cmp(right.get(index).unwrap_or(&0.0))
+        {
+            std::cmp::Ordering::Equal => continue,
+            ordering => return ordering,
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 #[cfg(test)]

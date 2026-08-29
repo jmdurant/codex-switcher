@@ -40,6 +40,8 @@ url = "2"
 flate2 = "1"
 chacha20poly1305 = "0.10"
 pbkdf2 = "0.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_Storage_FileSystem"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"

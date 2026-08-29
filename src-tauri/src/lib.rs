@@ -1,4 +1,4 @@
-//! Codex Switcher - Multi-account manager for Codex CLI
+//! AI Account Switcher - Multi-account manager for AI coding tools
 
 pub mod api;
 #[cfg(desktop)]
@@ -11,15 +11,17 @@ pub mod types;
 pub mod web;
 
 use commands::{
-    ack_close_behavior_prompt, add_account_from_file, cancel_login, check_codex_processes,
-    complete_close_behavior, complete_login, delete_account, export_accounts_full_encrypted_file,
-    export_accounts_slim_text, get_account_usage_stats, get_active_account_info, get_app_settings,
-    get_dock_display_mode, get_masked_account_ids, get_usage, hide_tray_window,
-    import_accounts_full_encrypted_file, import_accounts_slim_text, kill_codex_processes,
-    list_accounts, open_main_window, quit_app, refresh_account_metadata,
+    ack_close_behavior_prompt, add_account_from_file, cancel_login,
+    capture_current_antigravity_account, check_antigravity_processes, check_codex_processes,
+    complete_close_behavior, complete_login, delete_account, delete_antigravity_account,
+    export_accounts_full_encrypted_file, export_accounts_slim_text, get_account_usage_stats,
+    get_active_account_info, get_antigravity_usage, get_app_settings, get_dock_display_mode,
+    get_masked_account_ids, get_usage, hide_tray_window, import_accounts_full_encrypted_file,
+    import_accounts_slim_text, kill_antigravity_processes, kill_codex_processes, list_accounts,
+    list_antigravity_accounts, open_main_window, quit_app, refresh_account_metadata,
     refresh_all_accounts_usage, rename_account, report_usage, set_app_settings,
-    set_dock_display_mode, set_masked_account_ids, start_login, switch_account, warmup_account,
-    warmup_all_accounts,
+    set_dock_display_mode, set_masked_account_ids, start_login, start_relogin, switch_account,
+    switch_antigravity_account, warmup_account, warmup_all_accounts,
 };
 use tauri::Emitter;
 use tauri::Manager;
@@ -82,6 +84,13 @@ pub fn run() {
             switch_account,
             delete_account,
             rename_account,
+            list_antigravity_accounts,
+            capture_current_antigravity_account,
+            check_antigravity_processes,
+            switch_antigravity_account,
+            delete_antigravity_account,
+            get_antigravity_usage,
+            kill_antigravity_processes,
             export_accounts_slim_text,
             import_accounts_slim_text,
             export_accounts_full_encrypted_file,
@@ -91,6 +100,7 @@ pub fn run() {
             set_masked_account_ids,
             // OAuth
             start_login,
+            start_relogin,
             complete_login,
             cancel_login,
             // Usage

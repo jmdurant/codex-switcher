@@ -15,6 +15,31 @@ export interface AccountInfo {
   last_used_at: string | null;
 }
 
+export interface AntigravityAccountInfo {
+  id: string;
+  name: string;
+  email: string | null;
+  is_active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface AntigravityModelUsage {
+  label: string;
+  model_id: string;
+  remaining_percent: number;
+  reset_at: string | null;
+}
+
+export interface AntigravityUsageInfo {
+  plan_name: string | null;
+  prompt_credits_available: number | null;
+  prompt_credits_monthly: number | null;
+  flow_credits_available: number | null;
+  flow_credits_monthly: number | null;
+  models: AntigravityModelUsage[];
+}
+
 export interface UsageInfo {
   account_id: string;
   plan_type: string | null;

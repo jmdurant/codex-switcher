@@ -54,6 +54,16 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     Ok(())
 }
 
+/// Clear Codex credentials when no managed account remains active.
+pub fn clear_current_auth() -> Result<()> {
+    let auth_path = get_codex_auth_file()?;
+    if auth_path.exists() {
+        fs::remove_file(&auth_path)
+            .with_context(|| format!("Failed to remove auth.json: {}", auth_path.display()))?;
+    }
+    Ok(())
+}
+
 /// Create an AuthDotJson structure from a StoredAccount
 fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
     match &account.auth_data {

@@ -15,13 +15,13 @@ use std::collections::HashSet;
 use std::os::windows::process::CommandExt;
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// `powershell.exe` is resolved by absolute path because some systems do not
 /// have `System32\WindowsPowerShell\v1.0` on `PATH` (e.g. PowerShell 7-only
 /// setups), which makes a bare `powershell.exe` spawn fail.
 #[cfg(windows)]
-fn windows_powershell_command() -> Command {
+pub(crate) fn windows_powershell_command() -> Command {
     let absolute = std::env::var_os("SystemRoot")
         .map(|root| {
             std::path::PathBuf::from(root)
@@ -337,7 +337,7 @@ fn force_kill_processes_with_admin_privileges(pids: &[u32]) -> bool {
         .collect::<Vec<_>>()
         .join(" ");
     let script = format!(
-        r#"do shell script "for pid in {pid_args}; do /bin/kill -9 \"$pid\" 2>/dev/null || true; done" with administrator privileges with prompt "Codex Switcher needs permission to force close sudo/root Codex processes.""#
+        r#"do shell script "for pid in {pid_args}; do /bin/kill -9 \"$pid\" 2>/dev/null || true; done" with administrator privileges with prompt "AI Account Switcher needs permission to force close sudo/root Codex processes.""#
     );
 
     Command::new("/usr/bin/osascript")

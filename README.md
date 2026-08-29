@@ -1,33 +1,34 @@
 <p align="center">
-  <img src="src-tauri/icons/logo.svg" alt="Codex Switcher" width="128" height="128">
+  <img src="src-tauri/icons/logo.svg" alt="AI Account Switcher" width="128" height="128">
 </p>
 
-<h1 align="center">Codex Switcher</h1>
+<h1 align="center">AI Account Switcher</h1>
 
 <p align="center">
-  A Desktop Application for Managing Multiple OpenAI <a href="https://github.com/openai/codex">Codex</a> Accounts<br>
-  Easily switch between accounts, monitor usage, schedule warm-ups, and stay in control of your quota
+  A desktop application for managing multiple AI coding accounts across Codex and Antigravity<br>
+  Switch accounts, monitor live usage, schedule warm-ups, and stay in control of your quota
 </p>
 
 ## Features
 
-- **Multi-Account Management** – Add, rename, mask, import, export, and manage multiple Codex accounts in one place
+- **Multi-Account Management** – Add, rename, mask, import, export, and manage multiple Codex and Antigravity accounts in one place
 - **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup while preserving rotated ChatGPT sessions
 - **Usage Stats** – View account usage stats for OAuth accounts, including lifetime tokens, daily buckets, streaks, activity insights, and top integrations
 - **Manual Reset Credits** – See available manual reset credits beside each account plan badge, with the closest expiry highlighted as it approaches
 - **Automatic Warm-Up** – Warm up one account or all accounts manually, after each 5-hour reset window, or at specific scheduled times of day
 - **System Tray Controls** – Use the tray popup to switch accounts, inspect quota and active-account stats, refresh usage, open the main window, or quit the app
 - **Tray Display Modes** – Choose between the app icon with session percentage, a text-only hourly/weekly percentage display, or a hidden tray icon
-- **macOS Dock Control** – Keep Codex Switcher in the Dock or run it as a menu bar only app, with a first-close prompt and a tray fallback
+- **macOS Dock Control** – Keep AI Account Switcher in the Dock or run it as a menu bar only app, with a first-close prompt and a tray fallback
 - **Rate-Limit Monitoring** – View real-time 5-hour session and weekly usage, reset timing, credits, and subscription expiry
 - **Blocked Switch Recovery** – Detect running Codex sessions and offer a force-close flow before retrying the account switch
 - **Dual Login Mode** – Authenticate with ChatGPT OAuth or import existing `auth.json` files
+- **Antigravity / Gemini Sessions** – Capture and switch Antigravity desktop sessions; the `agy` CLI uses the same selected session
 
 ## Installation
 
 ### Download a Release
 
-The easiest way to install Codex Switcher is from the latest GitHub release:
+The easiest way to install AI Account Switcher is from the latest GitHub release:
 
 [Download the latest release](https://github.com/Lampese/codex-switcher/releases/latest)
 
@@ -44,13 +45,13 @@ Choose the file for your platform:
 > app is damaged, move it to `/Applications` and remove the quarantine flag:
 >
 > ```bash
-> sudo xattr -dr com.apple.quarantine "/Applications/Codex Switcher.app"
-> open "/Applications/Codex Switcher.app"
+> sudo xattr -dr com.apple.quarantine "/Applications/AI Account Switcher.app"
+> open "/Applications/AI Account Switcher.app"
 > ```
 
 ### Auto Updates
 
-Codex Switcher checks the latest GitHub release on startup. When a newer signed
+AI Account Switcher checks the latest GitHub release on startup. When a newer signed
 update package is available, the app shows an update prompt and can install it
 from inside the app.
 
@@ -166,6 +167,15 @@ has activity before you need it.
 Timed warm-up checks the schedule every 30 seconds, runs each configured minute
 only once per day, and skips missed times if the machine was asleep instead of
 warming accounts late.
+
+## Antigravity / Gemini
+
+On Windows, the **Antigravity / Gemini** section captures the currently signed-in
+Antigravity desktop session and lets you switch between captured sessions. The
+`agy.exe` CLI reads the same session, so it switches with the desktop account.
+
+Quit Antigravity desktop before switching. Capture each account while it is
+signed in, then use **Switch** to restore that session later.
 
 On macOS you can keep the machine awake with the built-in `caffeinate` command,
 which stops automatically when the app quits:

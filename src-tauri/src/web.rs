@@ -15,8 +15,8 @@ use crate::commands::{
     export_accounts_slim_text, fetch_usage, get_account_usage_stats, get_active_account_info,
     get_masked_account_ids, import_accounts_full_encrypted_bytes, import_accounts_slim_text,
     kill_codex_processes, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, set_masked_account_ids, start_login, switch_account, warmup_account,
-    warmup_all_accounts,
+    rename_account, set_masked_account_ids, start_login, start_relogin, switch_account,
+    warmup_account, warmup_all_accounts,
 };
 
 #[derive(Debug, Deserialize)]
@@ -80,7 +80,7 @@ pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
         .join("..")
         .join("dist");
 
-    println!("Codex Switcher web server listening on http://{address}");
+    println!("AI Account Switcher web server listening on http://{address}");
     println!("Serving static files from {}", dist_dir.display());
 
     for request in server.incoming_requests() {
@@ -171,6 +171,10 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "start_login" => {
             let args: LoginArgs = parse_args(payload)?;
             to_json(start_login(args.account_name).await?)
+        }
+        "start_relogin" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(start_relogin(args.account_id).await?)
         }
         "complete_login" => to_json(complete_login().await?),
         "cancel_login" => to_json(cancel_login().await?),

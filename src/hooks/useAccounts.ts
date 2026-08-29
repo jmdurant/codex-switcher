@@ -53,14 +53,20 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
       if (items.length === 0) return;
       const limit = Math.min(Math.max(concurrency, 1), items.length);
       let index = 0;
+      const failures: unknown[] = [];
       const runners = Array.from({ length: limit }, async () => {
         while (true) {
           const current = index++;
           if (current >= items.length) return;
-          await worker(items[current]);
+          try {
+            await worker(items[current]);
+          } catch (error) {
+            failures.push(error);
+          }
         }
       });
-      await Promise.allSettled(runners);
+      await Promise.all(runners);
+      if (failures.length > 0) throw failures[0];
     },
     []
   );
@@ -165,6 +171,12 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
         );
 
         reportUsageToTray(Array.from(usageResults.values()));
+        const failedUsage = Array.from(usageResults.values()).filter((usage) => usage.error);
+        if (failedUsage.length > 0) {
+          throw new Error(
+            failedUsage.map((usage) => usage.error).filter(Boolean).join("\n")
+          );
+        }
       } catch (err) {
         console.error("Failed to refresh usage:", err);
         throw err;
@@ -301,16 +313,22 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
     }
   }, []);
 
+  const startOAuthRelogin = useCallback(async (accountId: string) => {
+    return await invokeBackend<{ auth_url: string; callback_port: number }>("start_relogin", {
+      accountId,
+    });
+  }, []);
+
   const completeOAuthLogin = useCallback(async () => {
     try {
       const account = await invokeBackend<AccountInfo>("complete_login");
-      const accountList = await loadAccounts();
-      await refreshUsage(accountList);
+      await loadAccounts(true);
+      await refreshSingleUsage(account.id).catch(() => {});
       return account;
     } catch (err) {
       throw err;
     }
-  }, [loadAccounts, refreshUsage]);
+  }, [loadAccounts, refreshSingleUsage]);
 
   const exportAccountsSlimText = useCallback(async () => {
     try {
@@ -390,7 +408,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   }, []);
 
   useEffect(() => {
-    loadAccounts().then((accountList) => refreshUsage(accountList));
+    loadAccounts().then((accountList) => refreshUsage(accountList)).catch(() => {});
     
     // Auto-refresh usage at the user-configured interval (default 1 min).
     const intervalMs = usageRefreshIntervalMs ?? readUsageRefreshIntervalMs();
@@ -433,6 +451,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
     exportAccountsFullEncryptedFile,
     importAccountsFullEncryptedFile,
     startOAuthLogin,
+    startOAuthRelogin,
     completeOAuthLogin,
     cancelOAuthLogin,
     loadMaskedAccountIds,

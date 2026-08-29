@@ -2,6 +2,7 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -62,6 +63,21 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
     refresh_token.clone_from(&tokens.refresh_token);
     *account_id = Some(current_account_id);
     true
+}
+
+static ACCOUNTS_STORE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Apply a read-modify-write update while preventing concurrent account mutations.
+pub fn with_accounts_store<T>(
+    operation: impl FnOnce(&mut AccountsStore) -> Result<T>,
+) -> Result<T> {
+    let _lock = ACCOUNTS_STORE_LOCK
+        .lock()
+        .map_err(|_| anyhow::anyhow!("Accounts store lock was poisoned"))?;
+    let mut store = load_accounts()?;
+    let result = operation(&mut store)?;
+    save_accounts(&store)?;
+    Ok(result)
 }
 
 /// Get the path to the codex-switcher config directory
@@ -163,57 +179,134 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
 
 /// Add a new account to the store
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
+    with_accounts_store(|store| {
+        if store.accounts.iter().any(|a| a.name == account.name) {
+            anyhow::bail!("An account with name '{}' already exists", account.name);
+        }
 
-    // Check for duplicate names
-    if store.accounts.iter().any(|a| a.name == account.name) {
-        anyhow::bail!("An account with name '{}' already exists", account.name);
+        let account_clone = account.clone();
+        store.accounts.push(account);
+
+        if store.accounts.len() == 1 {
+            store.active_account_id = Some(account_clone.id.clone());
+        }
+
+        Ok(account_clone)
+    })
+}
+
+fn chatgpt_account_id(account: &StoredAccount) -> Option<&str> {
+    match &account.auth_data {
+        AuthData::ChatGPT { account_id, .. } => account_id.as_deref(),
+        AuthData::ApiKey { .. } => None,
+    }
+}
+
+fn reauthenticated_account(
+    existing: &StoredAccount,
+    authenticated: StoredAccount,
+) -> Result<StoredAccount> {
+    if !matches!(existing.auth_data, AuthData::ChatGPT { .. }) {
+        anyhow::bail!("Only ChatGPT OAuth accounts can be re-authenticated");
+    }
+    if !matches!(authenticated.auth_data, AuthData::ChatGPT { .. }) {
+        anyhow::bail!("Re-login did not return ChatGPT OAuth credentials");
     }
 
-    let account_clone = account.clone();
-    store.accounts.push(account);
-
-    // If this is the first account, make it active
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(account_clone.id.clone());
+    let expected_account_id = chatgpt_account_id(existing);
+    let actual_account_id = chatgpt_account_id(&authenticated);
+    if let (Some(expected), Some(actual)) = (expected_account_id, actual_account_id) {
+        if expected != actual {
+            anyhow::bail!(
+                "Re-login account mismatch: expected ChatGPT account {expected}, received {actual}"
+            );
+        }
     }
 
-    save_accounts(&store)?;
-    Ok(account_clone)
+    let normalize_email = |email: &str| email.trim().to_lowercase();
+    if let (Some(expected), Some(actual)) =
+        (existing.email.as_deref(), authenticated.email.as_deref())
+    {
+        if normalize_email(expected) != normalize_email(actual) {
+            anyhow::bail!("Re-login identity mismatch: expected {expected}, received {actual}");
+        }
+    }
+
+    let has_matching_account_id = matches!(
+        (expected_account_id, actual_account_id),
+        (Some(expected), Some(actual)) if expected == actual
+    );
+    let has_matching_email = matches!(
+        (existing.email.as_deref(), authenticated.email.as_deref()),
+        (Some(expected), Some(actual)) if normalize_email(expected) == normalize_email(actual)
+    );
+    if !has_matching_account_id && !has_matching_email {
+        anyhow::bail!(
+            "Could not verify that the new login belongs to '{}'",
+            existing.name
+        );
+    }
+
+    let mut updated = authenticated;
+    updated.id.clone_from(&existing.id);
+    updated.name.clone_from(&existing.name);
+    updated.created_at = existing.created_at;
+    updated.last_used_at = existing.last_used_at;
+    if updated.email.is_none() {
+        updated.email.clone_from(&existing.email);
+    }
+    if updated.plan_type.is_none() {
+        updated.plan_type.clone_from(&existing.plan_type);
+    }
+    Ok(updated)
+}
+
+/// Replace a ChatGPT account's credentials after an explicitly requested
+/// OAuth re-login while retaining the switcher's stable account identity.
+pub fn replace_account_after_relogin(
+    account_id: &str,
+    authenticated: StoredAccount,
+) -> Result<StoredAccount> {
+    with_accounts_store(|store| {
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == account_id)
+            .context("Account not found")?;
+        let updated = reauthenticated_account(account, authenticated)?;
+        account.clone_from(&updated);
+        Ok(updated)
+    })
 }
 
 /// Remove an account by ID
 pub fn remove_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
+    with_accounts_store(|store| {
+        let initial_len = store.accounts.len();
+        store.accounts.retain(|a| a.id != account_id);
 
-    let initial_len = store.accounts.len();
-    store.accounts.retain(|a| a.id != account_id);
+        if store.accounts.len() == initial_len {
+            anyhow::bail!("Account not found: {account_id}");
+        }
 
-    if store.accounts.len() == initial_len {
-        anyhow::bail!("Account not found: {account_id}");
-    }
+        if store.active_account_id.as_deref() == Some(account_id) {
+            store.active_account_id = store.accounts.first().map(|a| a.id.clone());
+        }
 
-    // If we removed the active account, clear it or set to first available
-    if store.active_account_id.as_deref() == Some(account_id) {
-        store.active_account_id = store.accounts.first().map(|a| a.id.clone());
-    }
-
-    save_accounts(&store)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Update the active account ID
 pub fn set_active_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
+    with_accounts_store(|store| {
+        if !store.accounts.iter().any(|a| a.id == account_id) {
+            anyhow::bail!("Account not found: {account_id}");
+        }
 
-    // Verify the account exists
-    if !store.accounts.iter().any(|a| a.id == account_id) {
-        anyhow::bail!("Account not found: {account_id}");
-    }
-
-    store.active_account_id = Some(account_id.to_string());
-    save_accounts(&store)?;
-    Ok(())
+        store.active_account_id = Some(account_id.to_string());
+        Ok(())
+    })
 }
 
 /// Get an account by ID
@@ -234,14 +327,12 @@ pub fn get_active_account() -> Result<Option<StoredAccount>> {
 
 /// Update an account's last_used_at timestamp
 pub fn touch_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
-
-    if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
-        account.last_used_at = Some(chrono::Utc::now());
-        save_accounts(&store)?;
-    }
-
-    Ok(())
+    with_accounts_store(|store| {
+        if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
+            account.last_used_at = Some(chrono::Utc::now());
+        }
+        Ok(())
+    })
 }
 
 /// Update an account's metadata (name, email, plan_type, subscription expiry)
@@ -252,45 +343,41 @@ pub fn update_account_metadata(
     plan_type: Option<String>,
     subscription_expires_at: Option<Option<DateTime<Utc>>>,
 ) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
-
-    // Check for duplicate names first (if renaming)
-    if let Some(ref new_name) = name {
-        if store
-            .accounts
-            .iter()
-            .any(|a| a.id != account_id && a.name == *new_name)
-        {
-            anyhow::bail!("An account with name '{new_name}' already exists");
+    with_accounts_store(|store| {
+        if let Some(ref new_name) = name {
+            if store
+                .accounts
+                .iter()
+                .any(|a| a.id != account_id && a.name == *new_name)
+            {
+                anyhow::bail!("An account with name '{new_name}' already exists");
+            }
         }
-    }
 
-    // Now find and update the account
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .context("Account not found")?;
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == account_id)
+            .context("Account not found")?;
 
-    if let Some(new_name) = name {
-        account.name = new_name;
-    }
+        if let Some(new_name) = name {
+            account.name = new_name;
+        }
 
-    if email.is_some() {
-        account.email = email;
-    }
+        if email.is_some() {
+            account.email = email;
+        }
 
-    if plan_type.is_some() {
-        account.plan_type = plan_type;
-    }
+        if plan_type.is_some() {
+            account.plan_type = plan_type;
+        }
 
-    if let Some(subscription_expires_at) = subscription_expires_at {
-        account.subscription_expires_at = subscription_expires_at;
-    }
+        if let Some(subscription_expires_at) = subscription_expires_at {
+            account.subscription_expires_at = subscription_expires_at;
+        }
 
-    let updated = account.clone();
-    save_accounts(&store)?;
-    Ok(updated)
+        Ok(account.clone())
+    })
 }
 
 /// Update ChatGPT OAuth tokens for an account and return the updated account.
@@ -304,48 +391,46 @@ pub fn update_account_chatgpt_tokens(
     plan_type: Option<String>,
     subscription_expires_at: Option<DateTime<Utc>>,
 ) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
+    with_accounts_store(|store| {
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|a| a.id == account_id)
+            .context("Account not found")?;
 
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .context("Account not found")?;
-
-    match &mut account.auth_data {
-        AuthData::ChatGPT {
-            id_token: stored_id_token,
-            access_token: stored_access_token,
-            refresh_token: stored_refresh_token,
-            account_id: stored_account_id,
-        } => {
-            *stored_id_token = id_token;
-            *stored_access_token = access_token;
-            *stored_refresh_token = refresh_token;
-            if let Some(new_account_id) = chatgpt_account_id {
-                *stored_account_id = Some(new_account_id);
+        match &mut account.auth_data {
+            AuthData::ChatGPT {
+                id_token: stored_id_token,
+                access_token: stored_access_token,
+                refresh_token: stored_refresh_token,
+                account_id: stored_account_id,
+            } => {
+                *stored_id_token = id_token;
+                *stored_access_token = access_token;
+                *stored_refresh_token = refresh_token;
+                if let Some(new_account_id) = chatgpt_account_id {
+                    *stored_account_id = Some(new_account_id);
+                }
+            }
+            AuthData::ApiKey { .. } => {
+                anyhow::bail!("Cannot update OAuth tokens for an API key account");
             }
         }
-        AuthData::ApiKey { .. } => {
-            anyhow::bail!("Cannot update OAuth tokens for an API key account");
+
+        if let Some(new_email) = email {
+            account.email = Some(new_email);
         }
-    }
 
-    if let Some(new_email) = email {
-        account.email = Some(new_email);
-    }
+        if let Some(new_plan_type) = plan_type {
+            account.plan_type = Some(new_plan_type);
+        }
 
-    if let Some(new_plan_type) = plan_type {
-        account.plan_type = Some(new_plan_type);
-    }
+        if let Some(subscription_expires_at) = subscription_expires_at {
+            account.subscription_expires_at = Some(subscription_expires_at);
+        }
 
-    if let Some(subscription_expires_at) = subscription_expires_at {
-        account.subscription_expires_at = Some(subscription_expires_at);
-    }
-
-    let updated = account.clone();
-    save_accounts(&store)?;
-    Ok(updated)
+        Ok(account.clone())
+    })
 }
 
 /// Get the list of masked account IDs
@@ -356,15 +441,15 @@ pub fn get_masked_account_ids() -> Result<Vec<String>> {
 
 /// Set the list of masked account IDs
 pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
-    let mut store = load_accounts()?;
-    store.masked_account_ids = ids;
-    save_accounts(&store)?;
-    Ok(())
+    with_accounts_store(|store| {
+        store.masked_account_ids = ids;
+        Ok(())
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::sync_active_account_tokens;
+    use super::{reauthenticated_account, sync_active_account_tokens};
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
 
@@ -519,5 +604,54 @@ mod tests {
         };
         assert_eq!(account_id.as_deref(), Some("workspace-a"));
         assert_eq!(refresh_token(&store.accounts[0]), "refresh-a2");
+    }
+
+    #[test]
+    fn relogin_replaces_credentials_but_preserves_switcher_identity() {
+        let mut existing = account("Saved name", "workspace-a", "old");
+        existing.email = Some("Person@Example.com".into());
+        existing.last_used_at = Some(chrono::Utc::now());
+        let original_id = existing.id.clone();
+        let original_created_at = existing.created_at;
+        let original_last_used_at = existing.last_used_at;
+
+        let mut authenticated = account("OAuth-generated name", "workspace-a", "new");
+        authenticated.email = Some("person@example.com".into());
+        authenticated.plan_type = Some("pro".into());
+
+        let updated = reauthenticated_account(&existing, authenticated).unwrap();
+
+        assert_eq!(updated.id, original_id);
+        assert_eq!(updated.name, "Saved name");
+        assert_eq!(updated.created_at, original_created_at);
+        assert_eq!(updated.last_used_at, original_last_used_at);
+        assert_eq!(updated.plan_type.as_deref(), Some("pro"));
+        assert_eq!(refresh_token(&updated), "refresh-new");
+    }
+
+    #[test]
+    fn relogin_rejects_a_different_chatgpt_account() {
+        let mut existing = account("Saved name", "workspace-a", "old");
+        existing.email = Some("person@example.com".into());
+        let mut authenticated = account("OAuth-generated name", "workspace-b", "new");
+        authenticated.email = Some("person@example.com".into());
+
+        let error = reauthenticated_account(&existing, authenticated).unwrap_err();
+
+        assert!(error.to_string().contains("account mismatch"));
+        assert_eq!(refresh_token(&existing), "refresh-old");
+    }
+
+    #[test]
+    fn relogin_rejects_a_different_email() {
+        let mut existing = account("Saved name", "workspace-a", "old");
+        existing.email = Some("person@example.com".into());
+        let mut authenticated = account("OAuth-generated name", "workspace-a", "new");
+        authenticated.email = Some("other@example.com".into());
+
+        let error = reauthenticated_account(&existing, authenticated).unwrap_err();
+
+        assert!(error.to_string().contains("identity mismatch"));
+        assert_eq!(refresh_token(&existing), "refresh-old");
     }
 }

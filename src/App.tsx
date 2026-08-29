@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
-import { AccountCard, AddAccountModal, UpdateChecker } from "./components";
+import { AccountCard, AddAccountModal, AntigravityAccounts, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -197,6 +197,7 @@ function App() {
     exportAccountsSlimText,
     importAccountsSlimText,
     startOAuthLogin,
+    startOAuthRelogin,
     completeOAuthLogin,
     cancelOAuthLogin,
     loadMaskedAccountIds,
@@ -204,6 +205,7 @@ function App() {
   } = useAccounts(usageRefreshIntervalMs);
 
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [reloginAccountId, setReloginAccountId] = useState<string | null>(null);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
   const [configModalMode, setConfigModalMode] = useState<"slim_export" | "slim_import">(
     "slim_export"
@@ -622,17 +624,10 @@ function App() {
     setRefreshSuccess(false);
     try {
       await refreshUsage(undefined, { refreshMetadata: true });
-      // Check if any accounts have usage errors
-      const failedAccounts = accounts.filter(
-        (a) => a.usage?.error
-      );
-      if (failedAccounts.length > 0) {
-        const names = failedAccounts.map((a) => `${a.name}: ${a.usage!.error}`).join("\n• ");
-        showWarmupToast(`Refresh done. Errors:\n• ${names}`, true);
-      } else {
-        setRefreshSuccess(true);
-        setTimeout(() => setRefreshSuccess(false), 2000);
-      }
+      setRefreshSuccess(true);
+      setTimeout(() => setRefreshSuccess(false), 2000);
+    } catch (err) {
+      showWarmupToast(`Refresh failed: ${formatWarmupError(err)}`, true);
     } finally {
       setIsRefreshing(false);
     }
@@ -1449,7 +1444,7 @@ function App() {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">
-                    Codex Switcher
+                    AI Account Switcher
                   </h1>
                   {processInfo && (
                     <div className="inline-flex items-center gap-1">
@@ -2032,6 +2027,7 @@ function App() {
                     onRefresh={() =>
                       refreshSingleUsage(activeAccount.id, { refreshMetadata: true })
                     }
+                    onRelogin={() => setReloginAccountId(activeAccount.id)}
                     onRename={(newName) => renameAccount(activeAccount.id, newName)}
                     switching={switchingId === activeAccount.id}
                     codexRunning={hasRunningProcesses ?? false}
@@ -2134,6 +2130,7 @@ function App() {
                       onRefresh={() =>
                         refreshSingleUsage(account.id, { refreshMetadata: true })
                       }
+                      onRelogin={() => setReloginAccountId(account.id)}
                       onRename={(newName) => renameAccount(account.id, newName)}
                       switching={switchingId === account.id}
                       codexRunning={hasRunningProcesses ?? false}
@@ -2161,6 +2158,7 @@ function App() {
             )}
           </div>
         )}
+        <AntigravityAccounts />
       </main>
 
       {/* Refresh Success Toast */}
@@ -2206,7 +2204,7 @@ function App() {
               </p>
               {pendingTraySwitchAccount && (
                 <p className="text-sm text-gray-600 dark:text-gray-300">
-                  After closing Codex, Codex Switcher will switch to{" "}
+                  After closing Codex, AI Account Switcher will switch to{" "}
                   <span className="font-medium text-gray-900 dark:text-gray-100">
                     {pendingTraySwitchAccount.name}
                   </span>
@@ -2249,12 +2247,12 @@ function App() {
           <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
             <div className="p-5 border-b border-gray-100 dark:border-gray-800">
               <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                Keep Codex Switcher in the Dock?
+                Keep AI Account Switcher in the Dock?
               </h2>
             </div>
             <div className="p-5 space-y-4">
               <p className="text-sm text-gray-600 dark:text-gray-300">
-                When the window is closed, Codex Switcher can stay in the Dock or live only in the menu bar.
+                When the window is closed, AI Account Switcher can stay in the Dock or live only in the menu bar.
               </p>
               <p className="text-sm text-gray-600 dark:text-gray-300">
                 You can always change this later from the tray popup.
@@ -2302,6 +2300,20 @@ function App() {
         onClose={() => setIsAddModalOpen(false)}
         onImportFile={importFromFile}
         onStartOAuth={startOAuthLogin}
+        onCompleteOAuth={completeOAuthLogin}
+        onCancelOAuth={cancelOAuthLogin}
+      />
+
+      <AddAccountModal
+        isOpen={reloginAccountId !== null}
+        mode="relogin"
+        accountName={accounts.find((account) => account.id === reloginAccountId)?.name}
+        onClose={() => setReloginAccountId(null)}
+        onImportFile={importFromFile}
+        onStartOAuth={() => {
+          if (!reloginAccountId) throw new Error("No account selected for re-login");
+          return startOAuthRelogin(reloginAccountId);
+        }}
         onCompleteOAuth={completeOAuthLogin}
         onCancelOAuth={cancelOAuthLogin}
       />
