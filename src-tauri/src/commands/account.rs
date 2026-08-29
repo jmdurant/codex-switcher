@@ -1,10 +1,11 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, create_chatgpt_account_from_refresh_token, ensure_chatgpt_tokens_fresh_locked,
-    get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
-    read_current_auth, remove_account, save_accounts, set_active_account, switch_to_account,
-    sync_active_account_tokens, touch_account, AUTH_OPERATION_LOCK,
+    add_account, clear_current_auth, create_chatgpt_account_from_refresh_token,
+    ensure_chatgpt_tokens_fresh_locked, get_active_account, import_from_auth_json,
+    import_from_auth_json_contents, load_accounts, read_current_auth, remove_account_from_store,
+    save_accounts, set_active_account, switch_to_account, sync_active_account_tokens,
+    touch_account, with_accounts_store, AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -206,7 +207,19 @@ pub async fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), S
 /// Remove an account
 #[tauri::command]
 pub async fn delete_account(account_id: String) -> Result<(), String> {
-    remove_account(&account_id).map_err(|e| e.to_string())?;
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    with_accounts_store(|store| {
+        let removal = remove_account_from_store(store, &account_id)?;
+        if removal.removed_is_active {
+            if let Some(account) = &removal.replacement {
+                switch_to_account(account)?;
+            } else {
+                clear_current_auth()?;
+            }
+        }
+        Ok(())
+    })
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 

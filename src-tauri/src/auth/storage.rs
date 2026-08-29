@@ -282,18 +282,51 @@ pub fn replace_account_after_relogin(
 /// Remove an account by ID
 pub fn remove_account(account_id: &str) -> Result<()> {
     with_accounts_store(|store| {
-        let initial_len = store.accounts.len();
-        store.accounts.retain(|a| a.id != account_id);
-
-        if store.accounts.len() == initial_len {
-            anyhow::bail!("Account not found: {account_id}");
-        }
-
-        if store.active_account_id.as_deref() == Some(account_id) {
-            store.active_account_id = store.accounts.first().map(|a| a.id.clone());
-        }
-
+        remove_account_from_store(store, account_id)?;
         Ok(())
+    })
+}
+
+#[derive(Debug)]
+pub(crate) struct AccountRemoval {
+    pub removed_is_active: bool,
+    pub replacement: Option<StoredAccount>,
+}
+
+/// Apply account deletion to an in-memory store and return the auth handoff
+/// required by callers that also manage the live Codex auth.json file.
+pub(crate) fn remove_account_from_store(
+    store: &mut AccountsStore,
+    account_id: &str,
+) -> Result<AccountRemoval> {
+    if !store
+        .accounts
+        .iter()
+        .any(|account| account.id == account_id)
+    {
+        anyhow::bail!("Account not found: {account_id}");
+    }
+
+    let removed_is_active = store.active_account_id.as_deref() == Some(account_id);
+    let replacement = removed_is_active
+        .then(|| {
+            store
+                .accounts
+                .iter()
+                .find(|account| account.id != account_id)
+                .cloned()
+        })
+        .flatten();
+
+    store.accounts.retain(|account| account.id != account_id);
+    store.masked_account_ids.retain(|id| id != account_id);
+    if removed_is_active {
+        store.active_account_id = replacement.as_ref().map(|account| account.id.clone());
+    }
+
+    Ok(AccountRemoval {
+        removed_is_active,
+        replacement,
     })
 }
 
@@ -449,7 +482,7 @@ pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{reauthenticated_account, sync_active_account_tokens};
+    use super::{reauthenticated_account, remove_account_from_store, sync_active_account_tokens};
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::Engine;
 
@@ -653,5 +686,98 @@ mod tests {
 
         assert!(error.to_string().contains("identity mismatch"));
         assert_eq!(refresh_token(&existing), "refresh-old");
+    }
+
+    #[test]
+    fn deleting_active_account_selects_replacement_and_cleans_masked_state() {
+        let account_a = account("A", "workspace-a", "a");
+        let account_a_id = account_a.id.clone();
+        let account_b = account("B", "workspace-b", "b");
+        let account_b_id = account_b.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account_a, account_b],
+            active_account_id: Some(account_a_id.clone()),
+            masked_account_ids: vec![account_a_id.clone(), account_b_id.clone()],
+            ..AccountsStore::default()
+        };
+
+        let removal = remove_account_from_store(&mut store, &account_a_id).unwrap();
+
+        assert!(removal.removed_is_active);
+        assert_eq!(
+            removal
+                .replacement
+                .as_ref()
+                .map(|account| account.id.as_str()),
+            Some(account_b_id.as_str())
+        );
+        assert_eq!(
+            store.active_account_id.as_deref(),
+            Some(account_b_id.as_str())
+        );
+        assert_eq!(store.masked_account_ids, vec![account_b_id]);
+        assert_eq!(store.accounts.len(), 1);
+    }
+
+    #[test]
+    fn deleting_last_active_account_clears_active_and_masked_state() {
+        let only_account = account("Only", "workspace-only", "only");
+        let account_id = only_account.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![only_account],
+            active_account_id: Some(account_id.clone()),
+            masked_account_ids: vec![account_id.clone()],
+            ..AccountsStore::default()
+        };
+
+        let removal = remove_account_from_store(&mut store, &account_id).unwrap();
+
+        assert!(removal.removed_is_active);
+        assert!(removal.replacement.is_none());
+        assert!(store.accounts.is_empty());
+        assert!(store.active_account_id.is_none());
+        assert!(store.masked_account_ids.is_empty());
+    }
+
+    #[test]
+    fn deleting_inactive_account_preserves_active_account() {
+        let account_a = account("A", "workspace-a", "a");
+        let account_a_id = account_a.id.clone();
+        let account_b = account("B", "workspace-b", "b");
+        let account_b_id = account_b.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account_a, account_b],
+            active_account_id: Some(account_a_id.clone()),
+            masked_account_ids: vec![account_b_id.clone()],
+            ..AccountsStore::default()
+        };
+
+        let removal = remove_account_from_store(&mut store, &account_b_id).unwrap();
+
+        assert!(!removal.removed_is_active);
+        assert!(removal.replacement.is_none());
+        assert_eq!(
+            store.active_account_id.as_deref(),
+            Some(account_a_id.as_str())
+        );
+        assert!(store.masked_account_ids.is_empty());
+    }
+
+    #[test]
+    fn deleting_unknown_account_does_not_mutate_store() {
+        let account_a = account("A", "workspace-a", "a");
+        let account_a_id = account_a.id.clone();
+        let mut store = AccountsStore {
+            accounts: vec![account_a],
+            active_account_id: Some(account_a_id.clone()),
+            masked_account_ids: vec![account_a_id],
+            ..AccountsStore::default()
+        };
+        let original = serde_json::to_value(&store).unwrap();
+
+        let error = remove_account_from_store(&mut store, "missing").unwrap_err();
+
+        assert!(error.to_string().contains("Account not found"));
+        assert_eq!(serde_json::to_value(&store).unwrap(), original);
     }
 }
