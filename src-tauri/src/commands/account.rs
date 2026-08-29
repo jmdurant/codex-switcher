@@ -1,9 +1,10 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
-    save_accounts, set_active_account, switch_to_account, touch_account,
+    add_account, create_chatgpt_account_from_refresh_token, ensure_chatgpt_tokens_fresh_locked,
+    get_active_account, import_from_auth_json, import_from_auth_json_contents, load_accounts,
+    read_current_auth, remove_account, save_accounts, set_active_account, switch_to_account,
+    sync_active_account_tokens, touch_account, AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -128,18 +129,22 @@ pub async fn add_account_from_auth_json_text(
 /// Switch to a different account
 #[tauri::command]
 pub async fn switch_account(account_id: String, force: Option<bool>) -> Result<(), String> {
-    switch_account_by_id(&account_id, force.unwrap_or(false))
+    switch_account_by_id(&account_id, force.unwrap_or(false)).await
 }
 
-pub fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String> {
-    let store = load_accounts().map_err(|e| e.to_string())?;
+pub async fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String> {
+    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let mut store = load_accounts().map_err(|e| e.to_string())?;
 
-    // Find the account
-    let account = store
+    let target_index = store
         .accounts
         .iter()
-        .find(|a| a.id == account_id)
+        .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
+
+    if store.active_account_id.as_deref() == Some(account_id) {
+        return Ok(());
+    }
 
     // When force=false (default, tray native menu path) we still guard.
     // When force=true (user confirmed the dialog in the React UI) we skip.
@@ -147,8 +152,20 @@ pub fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String>
         ensure_codex_not_running()?;
     }
 
+    // ChatGPT rotates single-use refresh tokens. Preserve the latest token
+    // before replacing auth.json, otherwise switching back restores a stale one.
+    if let Some(auth) = read_current_auth().map_err(|e| e.to_string())? {
+        if sync_active_account_tokens(&mut store, &auth) {
+            save_accounts(&store).map_err(|e| e.to_string())?;
+        }
+    }
+
+    let account = ensure_chatgpt_tokens_fresh_locked(&store.accounts[target_index])
+        .await
+        .map_err(|e| e.to_string())?;
+
     // Write to ~/.codex/auth.json
-    switch_to_account(account).map_err(|e| e.to_string())?;
+    switch_to_account(&account).map_err(|e| e.to_string())?;
 
     // Update the active account in our store
     set_active_account(account_id).map_err(|e| e.to_string())?;

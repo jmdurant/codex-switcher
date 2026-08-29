@@ -1,5 +1,8 @@
 use std::collections::HashMap;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    LazyLock, Mutex,
+};
 use std::time::Duration;
 
 use tauri::{
@@ -21,6 +24,8 @@ use crate::{
 
 static TRAY_USAGE: LazyLock<Mutex<HashMap<String, UsageInfo>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
@@ -269,34 +274,31 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 return;
             };
 
-            if load_accounts()
-                .ok()
-                .and_then(|store| store.active_account_id)
-                .as_deref()
-                == Some(account_id)
-            {
-                refresh_menu(app);
-                return;
-            }
-
-            if let Err(error) = switch_account_by_id(account_id, false) {
-                eprintln!("Failed to switch account from tray: {error}");
-                refresh_menu(app);
-                if is_codex_running_switch_block(&error) {
-                    show_main_window(app);
-                    let _ = app.emit(
-                        SWITCH_ACCOUNT_BLOCKED_EVENT,
-                        SwitchAccountBlockedPayload {
-                            account_id: account_id.to_string(),
-                            error,
-                        },
-                    );
+            let app = app.clone();
+            let account_id = account_id.to_string();
+            let request_sequence = TRAY_SWITCH_SEQUENCE.fetch_add(1, Ordering::AcqRel) + 1;
+            tauri::async_runtime::spawn(async move {
+                let _tray_switch_guard = TRAY_SWITCH_LOCK.lock().await;
+                if request_sequence != TRAY_SWITCH_SEQUENCE.load(Ordering::Acquire) {
+                    return;
                 }
-                return;
-            }
 
-            refresh_menu(app);
-            let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
+                if let Err(error) = switch_account_by_id(&account_id, false).await {
+                    eprintln!("Failed to switch account from tray: {error}");
+                    refresh_menu(&app);
+                    if is_codex_running_switch_block(&error) {
+                        show_main_window(&app);
+                        let _ = app.emit(
+                            SWITCH_ACCOUNT_BLOCKED_EVENT,
+                            SwitchAccountBlockedPayload { account_id, error },
+                        );
+                    }
+                    return;
+                }
+
+                refresh_menu(&app);
+                let _ = app.emit(ACCOUNTS_CHANGED_EVENT, ());
+            });
         }
     }
 }
@@ -423,26 +425,50 @@ fn active_usage_title(active_account_id: Option<&str>) -> String {
         .and_then(|cache| cache.get(active_account_id).cloned());
 
     match usage {
-        Some(usage) if usage.error.is_none() => {
-            usage_title(usage.primary_used_percent, usage.secondary_used_percent)
-        }
+        Some(usage) if usage.error.is_none() => usage_title(
+            usage.primary_used_percent,
+            usage.primary_window_minutes,
+            usage.secondary_used_percent,
+            usage.secondary_window_minutes,
+        ),
         _ => "H:-- W:--".to_string(),
     }
 }
 
-fn usage_title(primary_used_percent: Option<f64>, secondary_used_percent: Option<f64>) -> String {
+fn usage_title(
+    primary_used_percent: Option<f64>,
+    primary_window_minutes: Option<i64>,
+    secondary_used_percent: Option<f64>,
+    secondary_window_minutes: Option<i64>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(remaining) = remaining_percent_label(primary_used_percent) {
-        parts.push(format!("H:{remaining}"));
+        let label =
+            window_duration_label(primary_window_minutes).unwrap_or_else(|| "H".to_string());
+        parts.push(format!("{label}:{remaining}"));
     }
     if let Some(remaining) = remaining_percent_label(secondary_used_percent) {
-        parts.push(format!("W:{remaining}"));
+        let label =
+            window_duration_label(secondary_window_minutes).unwrap_or_else(|| "W".to_string());
+        parts.push(format!("{label}:{remaining}"));
     }
 
     if parts.is_empty() {
         "H:-- W:--".to_string()
     } else {
         parts.join(" ")
+    }
+}
+
+fn window_duration_label(window_minutes: Option<i64>) -> Option<String> {
+    let minutes = window_minutes?;
+    if minutes <= 0 {
+        return None;
+    }
+    if minutes < 24 * 60 {
+        Some(format!("{}h", (minutes + 59) / 60))
+    } else {
+        Some(format!("{}d", (minutes + 24 * 60 - 1) / (24 * 60)))
     }
 }
 
@@ -477,11 +503,15 @@ fn usage_suffix(account_id: &str) -> String {
 
     let mut parts = Vec::new();
     if let Some(remaining) = session_remaining_title(usage.primary_used_percent, false) {
-        parts.push(format!("S:{remaining}"));
+        let label =
+            window_duration_label(usage.primary_window_minutes).unwrap_or_else(|| "S".to_string());
+        parts.push(format!("{label}:{remaining}"));
     }
     if let Some(used) = usage.secondary_used_percent {
         if used.is_finite() {
-            parts.push(format!("W:{:.0}%", (100.0 - used).clamp(0.0, 100.0)));
+            let label = window_duration_label(usage.secondary_window_minutes)
+                .unwrap_or_else(|| "W".to_string());
+            parts.push(format!("{label}:{:.0}%", (100.0 - used).clamp(0.0, 100.0)));
         }
     }
 
@@ -624,10 +654,35 @@ mod tests {
 
     #[test]
     fn usage_title_omits_missing_windows() {
-        assert_eq!(usage_title(Some(27.0), Some(82.0)), "H:73% W:18%");
-        assert_eq!(usage_title(None, Some(35.0)), "W:65%");
-        assert_eq!(usage_title(Some(27.0), None), "H:73%");
-        assert_eq!(usage_title(None, None), "H:-- W:--");
+        assert_eq!(
+            usage_title(Some(27.0), Some(5 * 60), Some(82.0), Some(30 * 24 * 60)),
+            "5h:73% 30d:18%"
+        );
+        assert_eq!(
+            usage_title(None, None, Some(35.0), Some(7 * 24 * 60)),
+            "7d:65%"
+        );
+        assert_eq!(usage_title(Some(27.0), Some(5 * 60), None, None), "5h:73%");
+        assert_eq!(usage_title(None, None, None, None), "H:-- W:--");
+    }
+
+    #[test]
+    fn window_duration_labels_round_to_hours_and_days() {
+        assert_eq!(window_duration_label(Some(5 * 60)), Some("5h".to_string()));
+        assert_eq!(
+            window_duration_label(Some(12 * 60)),
+            Some("12h".to_string())
+        );
+        assert_eq!(
+            window_duration_label(Some(7 * 24 * 60)),
+            Some("7d".to_string())
+        );
+        assert_eq!(
+            window_duration_label(Some(30 * 24 * 60)),
+            Some("30d".to_string())
+        );
+        assert_eq!(window_duration_label(Some(0)), None);
+        assert_eq!(window_duration_label(None), None);
     }
 
     #[test]
