@@ -5,10 +5,12 @@ import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses
 import { AccountCard, AddAccountModal, AntigravityAccounts, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
+  completeIdeResume,
   exportFullBackupFile,
   importFullBackupFile,
   isTauriRuntime,
   invokeBackend,
+  prepareIdeResume,
 } from "./lib/platform";
 import {
   applyTheme,
@@ -577,11 +579,14 @@ function App() {
   }, []);
 
   const handleSwitch = async (accountId: string, force = false) => {
+    const ideResume = force ? await prepareIdeResume("codex") : null;
+
     // If force=true the user already confirmed the dialog in AccountCard.
     // We still need to kill Codex processes before switching.
     if (force) {
       const killed = await forceCloseCodexProcesses();
       if (!killed?.can_switch) {
+        await completeIdeResume(ideResume, false);
         showWarmupToast("Could not close Codex processes. Switch aborted.", true);
         return;
       }
@@ -600,6 +605,16 @@ function App() {
       console.error("Failed to switch account:", err);
       showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
     } finally {
+      if (force) {
+        const completion = await completeIdeResume(ideResume, true);
+        if (completion && completion.resumedSessions > 0) {
+          showWarmupToast(
+            `Resuming ${completion.resumedSessions} IDE terminal session${
+              completion.resumedSessions === 1 ? "" : "s"
+            }.`
+          );
+        }
+      }
       setSwitchingId(null);
     }
   };

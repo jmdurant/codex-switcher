@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PackageManifest Version="2.0.0" xmlns="http://schemas.microsoft.com/developer/vsx-schema/2011">
+  <Metadata>
+    <Identity Language="en-US" Id="ai-account-switcher-resume" Version="0.1.0" Publisher="jmdurant" />
+    <DisplayName>AI Account Switcher Resume</DisplayName>
+    <Description xml:space="preserve">Resume Codex and agy integrated-terminal sessions after profile switches.</Description>
+    <Tags>codex,agy,terminal,accounts</Tags>
+    <Categories>Other</Categories>
+    <Properties>
+      <Property Id="Microsoft.VisualStudio.Code.Engine" Value="^1.93.0" />
+      <Property Id="Microsoft.VisualStudio.Services.Content.Pricing" Value="Free" />
+    </Properties>
+  </Metadata>
+  <Installation>
+    <InstallationTarget Id="Microsoft.VisualStudio.Code" />
+  </Installation>
+  <Dependencies />
+  <Assets>
+    <Asset Type="Microsoft.VisualStudio.Code.Manifest" Path="extension/package.json" Addressable="true" />
+  </Assets>
+</PackageManifest>

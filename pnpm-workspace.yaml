@@ -1,5 +1,6 @@
 packages:
   - .
+  - ide-extension
 
 allowBuilds:
   esbuild: true

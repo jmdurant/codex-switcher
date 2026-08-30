@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import type { AntigravityAccountInfo, AntigravityUsageInfo } from "../types";
-import { invokeBackend, isTauriRuntime } from "../lib/platform";
+import {
+  completeIdeResume,
+  invokeBackend,
+  isTauriRuntime,
+  prepareIdeResume,
+} from "../lib/platform";
 
 const HIDDEN_MODELS_STORAGE_KEY = "antigravity-hidden-model-ids";
 
@@ -162,12 +167,13 @@ export function AntigravityAccounts() {
     }
   };
 
-  const switchAccount = async (accountId: string, force = false) => {
+  const switchAccount = async (accountId: string, force = false): Promise<boolean> => {
     try {
       setWorkingId(accountId);
       setError(null);
       await invokeBackend("switch_antigravity_account", { accountId, force });
       await loadAccounts();
+      return true;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       if (!force && message.includes("before switching the Antigravity account")) {
@@ -180,6 +186,7 @@ export function AntigravityAccounts() {
       } else {
         setError(message);
       }
+      return false;
     } finally {
       setWorkingId(null);
     }
@@ -188,6 +195,9 @@ export function AntigravityAccounts() {
   const forceCloseAndSwitch = async () => {
     const accountId = forceCloseCandidate;
     if (!accountId) return;
+
+    const ideResume = await prepareIdeResume("agy");
+    let processesClosed = false;
 
     try {
       setForceClosing(true);
@@ -203,12 +213,14 @@ export function AntigravityAccounts() {
         setError("Antigravity processes are still running.");
         return;
       }
+      processesClosed = true;
       await switchAccount(accountId, true);
       setForceCloseCandidate(null);
       setProcessInfo(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
+      await completeIdeResume(ideResume, processesClosed);
       setForceClosing(false);
     }
   };

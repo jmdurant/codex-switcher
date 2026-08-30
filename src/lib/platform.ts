@@ -2,6 +2,17 @@ import type { ImportAccountsSummary } from "../types";
 
 export type FileSource = string | File;
 
+export interface IdeResumePreparation {
+  requestId: string | null;
+  capturedSessions: number;
+  respondingClients: number;
+}
+
+export interface IdeResumeCompletion {
+  resumedSessions: number;
+  reopenedAntigravity: boolean;
+}
+
 export function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -31,6 +42,34 @@ export async function invokeBackend<T>(
   }
 
   return payload as T;
+}
+
+export async function prepareIdeResume(
+  tool: "codex" | "agy"
+): Promise<IdeResumePreparation | null> {
+  if (!isTauriRuntime()) return null;
+  try {
+    return await invokeBackend<IdeResumePreparation>("prepare_ide_resume", { tool });
+  } catch (error) {
+    console.warn("IDE resume preparation failed; continuing without auto-resume", error);
+    return null;
+  }
+}
+
+export async function completeIdeResume(
+  preparation: IdeResumePreparation | null,
+  resume: boolean
+): Promise<IdeResumeCompletion | null> {
+  if (!preparation?.requestId || !isTauriRuntime()) return null;
+  try {
+    return await invokeBackend<IdeResumeCompletion>("complete_ide_resume", {
+      requestId: preparation.requestId,
+      resume,
+    });
+  } catch (error) {
+    console.warn("IDE resume completion failed", error);
+    return null;
+  }
 }
 
 export async function openExternalUrl(url: string): Promise<void> {

@@ -21,6 +21,7 @@
 - **macOS Dock Control** – Keep AI Account Switcher in the Dock or run it as a menu bar only app, with a first-close prompt and a tray fallback
 - **Rate-Limit Monitoring** – View real-time 5-hour session and weekly usage, reset timing, credits, and subscription expiry
 - **Blocked Switch Recovery** – Detect running Codex sessions and offer a force-close flow before retrying the account switch
+- **IDE Terminal Resume (experimental)** – With the companion extension installed, resume Codex and `agy` sessions in VS Code or Antigravity integrated terminals after a forced profile switch
 - **Dual Login Mode** – Authenticate with ChatGPT OAuth or import existing `auth.json` files
 - **Antigravity / Gemini Sessions** – Capture and switch Antigravity desktop sessions; the `agy` CLI uses the same selected session
 
@@ -83,6 +84,26 @@ pnpm tauri build
 > `tauri:win` script instead: `pnpm tauri:win dev` and `pnpm tauri:win build`.
 
 The built application will be in `src-tauri/target/release/bundle/`.
+
+### IDE Terminal Resume Companion
+
+The optional companion extension lets a forced account switch return an active
+Codex or `agy` session to its VS Code-compatible integrated terminal. It uses
+terminal shell integration to capture the tool and working directory, then runs
+`codex resume --last` or `agy --continue` after the switch. If Antigravity must
+close for its credential replacement, the switcher reopens it and the extension
+creates a replacement terminal in the original workspace.
+
+```powershell
+pnpm --dir ide-extension run package
+code --install-extension ide-extension/ai-account-switcher-resume.vsix --force
+antigravity-ide --install-extension ide-extension/ai-account-switcher-resume.vsix --force
+```
+
+The bridge is local-only, does not copy credentials, and becomes a no-op when
+the extension is absent or no matching integrated-terminal command is active.
+VS Code terminal shell integration must be enabled. Sessions in remote extension
+hosts are intentionally excluded.
 
 ### Run the Dashboard in a Browser
 

@@ -1,0 +1,42 @@
+{
+  "name": "ai-account-switcher-resume",
+  "displayName": "AI Account Switcher Resume",
+  "description": "Resumes Codex and agy integrated-terminal sessions after AI Account Switcher changes profiles.",
+  "version": "0.1.0",
+  "publisher": "jmdurant",
+  "private": true,
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "AI Account Switcher Resume",
+      "properties": {
+        "aiAccountSwitcherResume.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Capture and resume Codex and agy commands when AI Account Switcher changes profiles."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "check": "tsc --noEmit",
+    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mts",
+    "package": "pnpm run check && pnpm run test && pnpm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.107.0",
+    "esbuild": "^0.25.0",
+    "typescript": "~5.8.3"
+  }
+}
