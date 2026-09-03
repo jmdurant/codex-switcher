@@ -18,6 +18,7 @@ import {
   readAutoWarmupAllEnabled,
   writeAutoWarmupAllEnabled,
 } from "./lib/autoWarmup";
+import { accountClassLabel, classifyAccount } from "./lib/accountPriority";
 
 const TRAY_REFRESH_EVENT = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT = "accounts-changed";
@@ -51,6 +52,8 @@ function formatError(err: unknown): string {
 function formatPlan(plan: string | null): string | null {
   const trimmed = plan?.trim();
   if (!trimmed) return null;
+  const classified = classifyAccount(trimmed);
+  if (classified !== "other") return accountClassLabel(classified);
   return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
 }
 

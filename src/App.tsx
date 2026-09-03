@@ -45,10 +45,13 @@ import {
   type AutoWarmupWindow,
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
+import { isUsageExhausted, selectFallbackAccount } from "./lib/accountPriority";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WARMUP_RETRY_BACKOFF_MS = 60 * 1000;
+const AUTO_SWITCH_STORAGE_KEY = "ai-account-switcher.auto-switch-on-exhaustion";
+const AUTO_SWITCH_COOLDOWN_MS = 30 * 1000;
 const LIMIT_FULL_THRESHOLD = 99.5;
 const ACCOUNT_SEARCH_THRESHOLD = 8;
 const SWITCH_ACCOUNT_BLOCKED_EVENT = "switch-account-blocked";
@@ -176,6 +179,12 @@ function App() {
   );
   // Custom interval input (ms), shown when user picks "Custom"
   const [customIntervalMinutes, setCustomIntervalMinutes] = useState("");
+  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(() => {
+    try { return window.localStorage.getItem(AUTO_SWITCH_STORAGE_KEY) === "true"; } catch { return false; }
+  });
+  const autoSwitchInFlightRef = useRef(false);
+  const autoSwitchHandledRef = useRef(new Map<string, string>());
+  const autoSwitchLastAtRef = useRef(0);
 
   // Auto warm-up minimum interval between successive warm-ups per account.
   const [autoWarmupIntervalMs, setAutoWarmupIntervalMs] = useState(
@@ -618,6 +627,30 @@ function App() {
       setSwitchingId(null);
     }
   };
+
+  // Automatically fail over only when explicitly enabled and Codex is running.
+  // Usage data is the source of truth; the IDE bridge is reused solely for resume.
+  useEffect(() => {
+    if (!autoSwitchEnabled || autoSwitchInFlightRef.current) return;
+    const active = accounts.find((account) => account.is_active);
+    if (!active?.usage || active.usageLoading || !isUsageExhausted(active.usage)) return;
+    if (!processInfo || processInfo.can_switch) return;
+
+    const eventKey = `${active.id}:${active.usage.primary_resets_at ?? ""}:${active.usage.secondary_resets_at ?? ""}`;
+    if (autoSwitchHandledRef.current.get(active.id) === eventKey) return;
+    if (Date.now() - autoSwitchLastAtRef.current < AUTO_SWITCH_COOLDOWN_MS) return;
+
+    const fallback = selectFallbackAccount(accounts, active.id);
+    if (!fallback) return;
+
+    autoSwitchHandledRef.current.set(active.id, eventKey);
+    autoSwitchLastAtRef.current = Date.now();
+    autoSwitchInFlightRef.current = true;
+    showWarmupToast(`Quota exhausted on ${active.name}; switching to ${fallback.name}.`);
+    void handleSwitch(fallback.id, true).finally(() => {
+      autoSwitchInFlightRef.current = false;
+    });
+  }, [accounts, autoSwitchEnabled, handleSwitch, processInfo]);
 
   const handleDelete = async (accountId: string) => {
     if (deleteConfirmId !== accountId) {
@@ -1798,6 +1831,24 @@ function App() {
                     {/* Usage refresh interval — always shown */}
                     <div className="my-1 border-t border-gray-200 dark:border-neutral-800" />
                     <div className="px-3 py-2">
+                      <label className="mb-2 flex items-center justify-between text-sm font-medium text-gray-800 dark:text-gray-100">
+                        <span>
+                          <span>Auto-switch on exhausted quota</span>
+                          <span className="mt-0.5 block text-[11px] font-normal text-gray-400 dark:text-gray-500">
+                            Uses 10x Team → Team → Quorum, then resumes Codex.
+                          </span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={autoSwitchEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setAutoSwitchEnabled(enabled);
+                            try { window.localStorage.setItem(AUTO_SWITCH_STORAGE_KEY, String(enabled)); } catch {}
+                          }}
+                          className="ml-3 h-4 w-4 accent-gray-900 dark:accent-gray-100"
+                        />
+                      </label>
                       <div className="mb-0.5 text-xs font-medium text-gray-700 dark:text-gray-200">
                         Usage bar refresh interval
                       </div>

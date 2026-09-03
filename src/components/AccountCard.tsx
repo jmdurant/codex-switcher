@@ -1,6 +1,7 @@
 import { useCallback, useState, useRef, useEffect } from "react";
 import type { AccountResetCredits, AccountUsageStats as AccountUsageStatsInfo, AccountWithUsage } from "../types";
 import { invokeBackend } from "../lib/platform";
+import { accountClassLabel, classifyAccount } from "../lib/accountPriority";
 import { AccountUsageStats } from "./AccountUsageStats";
 import { ResetCreditsMenu } from "./ResetCreditsMenu";
 import { UsageBar } from "./UsageBar";
@@ -196,8 +197,11 @@ export function AccountCard({
     }
   };
 
+  const classifiedPlan = classifyAccount(account.plan_type);
   const planDisplay = account.plan_type
-    ? account.plan_type.charAt(0).toUpperCase() + account.plan_type.slice(1)
+    ? classifiedPlan === "other"
+      ? account.plan_type.charAt(0).toUpperCase() + account.plan_type.slice(1)
+      : accountClassLabel(classifiedPlan)
     : account.auth_mode === "api_key"
       ? "API Key"
       : "Unknown";
