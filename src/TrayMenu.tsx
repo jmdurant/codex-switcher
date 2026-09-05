@@ -3,7 +3,6 @@ import type {
   AccountInfo,
   AccountUsageStats,
   AntigravityUsageInfo,
-  DockDisplayMode,
   UsageInfo,
 } from "./types";
 import { invokeBackend, isTauriRuntime } from "./lib/platform";
@@ -191,7 +190,6 @@ function TrayMenu() {
   const [antigravityUsage, setAntigravityUsage] = useState<AntigravityUsageInfo | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(readAutoWarmupAllEnabled);
-  const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
 
   // Fetch each account's rate-limit usage in parallel; rows fill in as they land.
   const loadUsage = useCallback(async (list: AccountInfo[]) => {
@@ -275,18 +273,8 @@ function TrayMenu() {
     }
   }, []);
 
-  const loadDockDisplayMode = useCallback(async () => {
-    try {
-      const mode = await invokeBackend<DockDisplayMode | null>("get_dock_display_mode");
-      setDockDisplayMode(mode);
-    } catch {
-      setDockDisplayMode(null);
-    }
-  }, []);
-
   const load = useCallback(async () => {
     try {
-      void loadDockDisplayMode();
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
       setAccounts(list);
       setUsageById((prev) => retainUsageForAccounts(prev, list));
@@ -299,7 +287,7 @@ function TrayMenu() {
     } finally {
       setLoading(false);
     }
-  }, [loadActiveStats, loadAntigravityUsage, loadDockDisplayMode, loadUsage]);
+  }, [loadActiveStats, loadAntigravityUsage, loadUsage]);
 
   // Manual refresh: re-pull accounts and actively fetch fresh usage once.
   const handleRefresh = useCallback(async () => {
@@ -331,23 +319,6 @@ function TrayMenu() {
       setError(formatError(err));
     }
   }, [autoWarmupAllEnabled]);
-
-  const handleDockDisplayMode = useCallback(
-    async (mode: DockDisplayMode) => {
-      const previous = dockDisplayMode;
-      setDockDisplayMode(mode);
-      try {
-        const next = await invokeBackend<DockDisplayMode | null>("set_dock_display_mode", {
-          mode,
-        });
-        setDockDisplayMode(next);
-      } catch (err) {
-        setDockDisplayMode(previous);
-        setError(formatError(err));
-      }
-    },
-    [dockDisplayMode]
-  );
 
   // Reload when the tray is reopened or accounts change elsewhere.
   useEffect(() => {
@@ -634,34 +605,6 @@ function TrayMenu() {
       {error && (
         <div className="border-t border-gray-100 px-3 py-2 text-xs text-red-600 dark:border-gray-800 dark:text-red-400">
           {error}
-        </div>
-      )}
-
-      {dockDisplayMode && (
-        <div className="flex items-center gap-1 border-t border-gray-100 px-1.5 py-1.5 dark:border-gray-800">
-          <span className="px-1.5 text-[11px] font-medium text-gray-500 dark:text-gray-400">
-            Dock
-          </span>
-          <button
-            onClick={() => void handleDockDisplayMode("show_in_dock")}
-            className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
-              dockDisplayMode === "show_in_dock"
-                ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-            }`}
-          >
-            Show
-          </button>
-          <button
-            onClick={() => void handleDockDisplayMode("menu_bar_only")}
-            className={`rounded-md px-2 py-1 text-[11px] font-semibold transition-colors ${
-              dockDisplayMode === "menu_bar_only"
-                ? "bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900"
-                : "bg-gray-100 text-gray-700 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-            }`}
-          >
-            Menu Bar
-          </button>
         </div>
       )}
 

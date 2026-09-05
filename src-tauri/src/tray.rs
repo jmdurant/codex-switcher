@@ -173,20 +173,51 @@ fn position_near_cursor<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
     cursor: PhysicalPosition<f64>,
 ) {
+    let monitor = window.monitor_from_point(cursor.x, cursor.y).ok().flatten();
+    let scale = monitor.as_ref().map(|m| m.scale_factor()).unwrap_or(1.0);
     let size = window.outer_size().ok();
-    let width = size.map(|s| s.width as f64).unwrap_or(TRAY_WIDTH);
-    let height = size.map(|s| s.height as f64).unwrap_or(TRAY_HEIGHT);
-
-    let x = (cursor.x - width / 2.0).max(0.0);
-    // macOS menu bar sits at the top, so drop the popup below the icon.
-    // Other platforms keep the tray at the bottom, so float it above the cursor.
-    let y = if cfg!(target_os = "macos") {
-        cursor.y + 4.0
-    } else {
-        (cursor.y - height - 4.0).max(0.0)
-    };
+    let width = size.map(|s| s.width as f64).unwrap_or(TRAY_WIDTH * scale);
+    let height = size.map(|s| s.height as f64).unwrap_or(TRAY_HEIGHT * scale);
+    let bounds = monitor.as_ref().map(|monitor| {
+        let area = monitor.work_area();
+        (
+            area.position.x as f64,
+            area.position.y as f64,
+            area.size.width as f64,
+            area.size.height as f64,
+        )
+    });
+    let (x, y) = tray_popup_position(
+        (cursor.x, cursor.y),
+        (width, height),
+        bounds,
+        cfg!(target_os = "macos"),
+        4.0 * scale,
+    );
 
     let _ = window.set_position(PhysicalPosition::new(x, y));
+}
+
+fn tray_popup_position(
+    cursor: (f64, f64),
+    size: (f64, f64),
+    bounds: Option<(f64, f64, f64, f64)>,
+    below: bool,
+    gap: f64,
+) -> (f64, f64) {
+    let x = cursor.0 - size.0 / 2.0;
+    let y = if below {
+        cursor.1 + gap
+    } else {
+        cursor.1 - size.1 - gap
+    };
+    match bounds {
+        Some((left, top, width, height)) => (
+            x.clamp(left, (left + width - size.0).max(left)),
+            y.clamp(top, (top + height - size.1).max(top)),
+        ),
+        None => (x, y),
+    }
 }
 
 // ============================================================================
@@ -705,6 +736,64 @@ fn compare_model_versions(left: &str, right: &str) -> std::cmp::Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn popup_stays_on_the_clicked_monitor_including_negative_coordinates() {
+        assert_eq!(
+            tray_popup_position(
+                (-20.0, 12.0),
+                (300.0, 420.0),
+                Some((-1920.0, 24.0, 1920.0, 1056.0)),
+                true,
+                4.0,
+            ),
+            (-300.0, 24.0)
+        );
+        assert_eq!(
+            tray_popup_position(
+                (1900.0, -1068.0),
+                (300.0, 420.0),
+                Some((0.0, -1056.0, 1920.0, 1056.0)),
+                true,
+                4.0,
+            ),
+            (1620.0, -1056.0)
+        );
+    }
+
+    #[test]
+    fn popup_uses_physical_bounds_on_retina_and_bottom_trays() {
+        assert_eq!(
+            tray_popup_position(
+                (2860.0, 20.0),
+                (600.0, 840.0),
+                Some((0.0, 48.0, 2880.0, 1752.0)),
+                true,
+                8.0,
+            ),
+            (2280.0, 48.0)
+        );
+        assert_eq!(
+            tray_popup_position(
+                (1900.0, 1060.0),
+                (300.0, 420.0),
+                Some((0.0, 0.0, 1920.0, 1040.0)),
+                false,
+                4.0,
+            ),
+            (1620.0, 620.0)
+        );
+        assert_eq!(
+            tray_popup_position(
+                (100.0, 12.0),
+                (300.0, 420.0),
+                Some((0.0, 24.0, 200.0, 200.0)),
+                true,
+                4.0,
+            ),
+            (0.0, 24.0)
+        );
+    }
 
     #[test]
     fn embedded_tray_icon_is_not_an_opaque_block() {

@@ -80,6 +80,8 @@ pub fn run() {
             commands::open_codex_app,
             // Account management
             list_accounts,
+            commands::get_current_codex_login,
+            commands::capture_current_codex_login,
             get_active_account_info,
             add_account_from_file,
             switch_account,

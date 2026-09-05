@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
-import { AccountCard, AddAccountModal, AntigravityAccounts, UpdateChecker } from "./components";
+import { AccountCard, AddAccountModal, AntigravityAccounts, CurrentCodexLogin, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   completeIdeResume,
@@ -289,6 +289,17 @@ function App() {
   const [openCodexAfterSwitch, setOpenCodexAfterSwitch] = useState(false);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [startMinimized, setStartMinimized] = useState(false);
+  const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
+  const [savingDockDisplayMode, setSavingDockDisplayMode] = useState(false);
+
+  useEffect(() => {
+    if (!isTauriRuntime() || !isActionsMenuOpen) return;
+    let cancelled = false;
+    void invokeBackend<DockDisplayMode | null>("get_dock_display_mode")
+      .then((mode) => { if (!cancelled) setDockDisplayMode(mode); })
+      .catch(() => { if (!cancelled) setDockDisplayMode(null); });
+    return () => { cancelled = true; };
+  }, [isActionsMenuOpen]);
   const accountsRef = useRef(accounts);
   const autoWarmupAccountIdsRef = useRef(autoWarmupAccountIds);
   const autoWarmupLedgerRef = useRef(autoWarmupLedger);
@@ -700,6 +711,20 @@ function App() {
   }, []);
 
   // Settings toggle handlers — must be after showWarmupToast / formatWarmupError
+  const handleToggleDockDisplayMode = useCallback(async () => {
+    setSavingDockDisplayMode(true);
+    try {
+      const mode = await invokeBackend<DockDisplayMode | null>("set_dock_display_mode", {
+        mode: dockDisplayMode === "show_in_dock" ? "menu_bar_only" : "show_in_dock",
+      });
+      setDockDisplayMode(mode);
+    } catch (err) {
+      showWarmupToast(`Failed to save setting: ${formatWarmupError(err)}`, true);
+    } finally {
+      setSavingDockDisplayMode(false);
+    }
+  }, [dockDisplayMode, formatWarmupError, showWarmupToast]);
+
   const handleToggleOpenCodexAfterSwitch = useCallback(async () => {
     const next = !openCodexAfterSwitch;
     setOpenCodexAfterSwitch(next);
@@ -1798,6 +1823,18 @@ function App() {
                     {isTauriRuntime() && (
                       <>
                         <div className="my-1 border-t border-gray-200 dark:border-neutral-800" />
+                        {dockDisplayMode !== null && (
+                          <label className="flex items-center justify-between rounded-lg px-3 py-2 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-neutral-900">
+                            <span className="dark:text-white">Show in Dock</span>
+                            <input
+                              type="checkbox"
+                              checked={dockDisplayMode === "show_in_dock"}
+                              disabled={savingDockDisplayMode}
+                              onChange={() => void handleToggleDockDisplayMode()}
+                              className="h-4 w-4 accent-gray-900 dark:accent-gray-100 disabled:opacity-50"
+                            />
+                          </label>
+                        )}
                         <label className="flex items-center justify-between rounded-lg px-3 py-2 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-neutral-900">
                           <span className="dark:text-white">Open Codex after switch</span>
                           <input
@@ -1989,6 +2026,15 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-6 pt-4 pb-8">
+        <CurrentCodexLogin
+          accountsRevision={accounts.map((account) => `${account.id}:${account.is_active}`).join(",")}
+          maskedAccountIds={maskedAccounts}
+          onCaptured={async (account) => {
+            await loadAccounts(true);
+            // Capture has succeeded; usage failures belong on this account's card.
+            await refreshSingleUsage(account.id).catch(() => {});
+          }}
+        />
         {loading && accounts.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20">
             <div className="animate-spin h-10 w-10 border-2 border-gray-900 dark:border-gray-100 border-t-transparent rounded-full mb-4"></div>

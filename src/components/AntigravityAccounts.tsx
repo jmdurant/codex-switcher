@@ -254,7 +254,7 @@ export function AntigravityAccounts() {
             Antigravity / Gemini
           </h2>
           <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-            Capture the current Antigravity desktop session, then switch it after quitting the desktop app.
+            Capture your signed-in Antigravity / agy session, then quit the app and CLI before switching. Use a name such as Personal or Work to identify each account.
           </p>
         </div>
         <div className="flex w-full gap-2 sm:w-auto">

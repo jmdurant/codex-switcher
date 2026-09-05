@@ -12,7 +12,8 @@ export function classifyCommand(commandLine: string): ResumeTool | undefined {
   const trimmed = commandLine.trim().replace(/^&\s+/, "");
   const firstToken = trimmed.match(/^(?:"[^"]+"|'[^']+'|\S+)/)?.[0];
   if (!firstToken) return undefined;
-  const executable = path
+  // Commands may use either path convention regardless of the extension host.
+  const executable = path.win32
     .basename(firstToken.replace(/^['"]|['"]$/g, ""))
     .toLowerCase();
   if (["codex", "codex.exe", "codex.cmd", "codex.ps1"].includes(executable)) {

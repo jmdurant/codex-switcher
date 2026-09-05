@@ -13,3 +13,9 @@ accepts arbitrary commands from the switcher.
 Shell integration must be enabled for command detection. Remote extension hosts
 are intentionally ignored because their filesystem and processes may be on a
 different machine from the switcher.
+
+Build a local VSIX from the repository root with
+`pnpm --dir ide-extension run package`. This runs type checks, tests, and the
+build before packaging. macOS/Linux use `zip`; Windows uses PowerShell.
+Install the result with
+`code --install-extension ide-extension/ai-account-switcher-resume.vsix --force`.

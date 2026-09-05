@@ -30,3 +30,11 @@ test("resume commands are fixed and do not contain captured shell text", () => {
     commandLine: "agy --continue",
   });
 });
+
+test("recognizes macOS and Linux installation paths including quoted spaces", () => {
+  assert.equal(classifyCommand("/opt/homebrew/bin/codex resume --last"), "codex");
+  assert.equal(classifyCommand("'/Users/Test User/bin/codex'"), "codex");
+  assert.equal(classifyCommand('"/Applications/Antigravity.app/Contents/Resources/app/bin/agy" --continue'), "agy");
+  assert.equal(classifyCommand("/usr/local/bin/agy"), "agy");
+  assert.equal(classifyCommand("/usr/bin/echo /opt/homebrew/bin/codex"), undefined);
+});

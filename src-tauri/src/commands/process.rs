@@ -2,7 +2,7 @@
 
 use std::process::Command;
 
-#[cfg(any(windows, test))]
+#[cfg(any(unix, windows, test))]
 use anyhow::Context;
 
 #[cfg(unix)]
@@ -403,15 +403,22 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
     {
         let mut pids = Vec::new();
         let mut bg_count = 0;
-        let process_names = read_unix_process_names();
+        let process_names = read_unix_process_names()?;
 
         // Include TTY so we can distinguish interactive CLI sessions from
         // background helper processes such as lingering app-server instances.
         let output = Command::new("ps")
             .args(["-axo", "pid=,tty=,command="])
-            .output();
+            .output()
+            .context("Failed to check for running Codex processes")?;
 
-        if let Ok(output) = output {
+        anyhow::ensure!(
+            output.status.success(),
+            "Failed to check for running Codex processes: ps exited with {}",
+            output.status
+        );
+
+        {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let line = line.trim();
@@ -419,14 +426,17 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
                     continue;
                 }
 
-                let mut parts = line.split_whitespace();
+                let mut parts = line.splitn(2, char::is_whitespace);
                 let Some(pid_str) = parts.next() else {
                     continue;
                 };
-                let Some(tty) = parts.next() else {
+                let Some(rest) = parts.next() else {
                     continue;
                 };
-                let command = parts.collect::<Vec<_>>().join(" ");
+                let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
+                let tty = parts.next().unwrap_or("");
+                // Preserve spaces inside app bundle paths for Info.plist lookup.
+                let command = parts.next().unwrap_or("").trim_start();
                 if command.is_empty() {
                     continue;
                 }
@@ -446,9 +456,8 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
                 // splitting on whitespace can turn helper processes into false
                 // positives for the main `Codex` app. Detect by full command shape
                 // instead of relying on the first token.
-                let first_token = command.split_whitespace().next().unwrap_or("");
-                let is_codex_cli = first_token == "codex" || first_token.ends_with("/codex");
                 let process_name = process_names.get(&pid).map(String::as_str);
+                let is_codex_cli = is_unix_codex_cli_process(command, process_name);
                 #[cfg(target_os = "macos")]
                 let bundle_identifier = read_macos_app_bundle_identifier(&command, process_name);
                 #[cfg(not(target_os = "macos"))]
@@ -501,12 +510,18 @@ fn find_codex_processes() -> anyhow::Result<(Vec<u32>, usize)> {
 }
 
 #[cfg(unix)]
-fn read_unix_process_names() -> HashMap<u32, String> {
-    let Ok(output) = Command::new("ps").args(["-axo", "pid=,ucomm="]).output() else {
-        return HashMap::new();
-    };
+fn read_unix_process_names() -> anyhow::Result<HashMap<u32, String>> {
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,ucomm="])
+        .output()
+        .context("Failed to read process names")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "Failed to read process names: ps exited with {}",
+        output.status
+    );
 
-    String::from_utf8_lossy(&output.stdout)
+    Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter_map(|line| {
             let mut parts = line.trim().splitn(2, char::is_whitespace);
@@ -514,7 +529,20 @@ fn read_unix_process_names() -> HashMap<u32, String> {
             let name = parts.next()?.trim();
             (!name.is_empty()).then(|| (pid, name.to_string()))
         })
-        .collect()
+        .collect())
+}
+
+#[cfg(unix)]
+fn is_unix_codex_cli_process(command: &str, process_name: Option<&str>) -> bool {
+    // ucomm identifies the executable even when its installation path has spaces.
+    // Prefer it to argv so another command mentioning codex cannot match.
+    match process_name {
+        Some(name) => name == "codex",
+        None => {
+            let executable = command.split_whitespace().next().unwrap_or("");
+            executable == "codex" || executable.ends_with("/codex")
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -803,6 +831,28 @@ mod tests {
         classify_windows_codex_processes, is_windows_codex_root_process,
         parse_windows_codex_processes, WindowsCodexProcess,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn detects_cli_in_paths_with_spaces_without_matching_other_commands() {
+        assert!(super::is_unix_codex_cli_process(
+            "/Users/Test User/bin/codex resume --last",
+            Some("codex")
+        ));
+        assert!(!super::is_unix_codex_cli_process(
+            "/bin/sh -c /Users/Test User/bin/codex",
+            Some("sh")
+        ));
+        assert!(!super::is_unix_codex_cli_process(
+            "/Applications/Codex.app/Contents/MacOS/Codex",
+            Some("Codex")
+        ));
+        assert!(super::is_unix_codex_cli_process(
+            "/opt/homebrew/bin/codex",
+            None
+        ));
+        assert!(!super::is_unix_codex_cli_process("echo codex", None));
+    }
 
     fn windows_process(
         name: &str,

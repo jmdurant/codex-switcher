@@ -31,7 +31,7 @@
 
 The easiest way to install AI Account Switcher is from the latest GitHub release:
 
-[Download the latest release](https://github.com/Lampese/codex-switcher/releases/latest)
+[Download the latest release](https://github.com/jmdurant/codex-switcher/releases/latest)
 
 Choose the file for your platform:
 
@@ -52,21 +52,28 @@ Choose the file for your platform:
 
 ### Auto Updates
 
-AI Account Switcher checks the latest GitHub release on startup. When a newer signed
+AI Account Switcher checks the latest release from `jmdurant/codex-switcher` on startup. When a newer signed
 update package is available, the app shows an update prompt and can install it
 from inside the app.
+
+Fork release setup: the public updater key in `src-tauri/tauri.conf.json` is still
+inherited from upstream. Before publishing this fork's updates, replace it with
+your own public key and configure the matching `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` GitHub Actions secrets. Keep the private key
+out of the repository. The release workflow publishes the signed packages and
+`latest.json`; until a release exists, the startup check has no update to offer.
 
 ### Build from Source
 
 #### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (v24 LTS; also runs the TypeScript tests directly)
 - [pnpm](https://pnpm.io/)
 - [Rust](https://rustup.rs/)
 
 ```bash
 # Clone the repository
-git clone https://github.com/Lampese/codex-switcher.git
+git clone https://github.com/jmdurant/codex-switcher.git
 cd codex-switcher
 
 # Install dependencies
@@ -85,6 +92,52 @@ pnpm tauri build
 
 The built application will be in `src-tauri/target/release/bundle/`.
 
+#### macOS development
+
+Install Xcode or its Command Line Tools (`xcode-select --install`) and the Rust
+toolchain; see [Tauri's macOS prerequisites](https://v2.tauri.app/start/prerequisites/#macos).
+The same `pnpm tauri dev` command works on Apple Silicon and Intel. Tauri loads
+`src-tauri/tauri.macos.conf.json` automatically for the native title bar.
+
+To build and install the app and its companion extension in one step:
+
+```bash
+pnpm install:macos
+```
+
+This packages the VSIX, builds an optimized locally signed `.app`, installs it
+in `/Applications`, automatically installs and verifies the extension in detected
+VS Code/Insiders and Antigravity IDE installations, and opens the switcher. An
+existing `Codex Switcher.app` installation is upgraded in place. Quit the switcher
+before upgrading; reload open editor windows afterward to activate the extension.
+Editors that are not installed are skipped. Editor discovery uses app bundles
+and Spotlight, so the `code` command does not need to be on your shell's PATH.
+The extension is installed in each editor's default profile; custom profiles can
+use the editor CLI's `--profile` option with the VSIX.
+
+Use `pnpm install:macos --debug` for a faster development build, or append
+`--skip-build` to install existing artifacts. To install the extension after
+adding another editor, run `pnpm install:extensions:macos`.
+This automation belongs to the scripted installer; dragging a DMG app into
+Applications does not run the extension installer.
+
+To build a local `.app` without release updater signing keys:
+
+```bash
+pnpm tauri build --debug --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+```
+
+The app is written to `src-tauri/target/debug/bundle/macos/AI Account Switcher.app`.
+For an optimized local build, omit `--debug` and use the `release` output directory.
+The `macOS checks` workflow runs native Rust and frontend tests, checks the Intel
+target, packages the companion extension, and builds a local app on pull requests.
+
+Codex account switching, process detection, Dock/menu bar settings, and launch at
+login have macOS implementations. Antigravity / agy also supports macOS Keychain
+capture/switching, process detection and force-close, live usage, and reopening
+Antigravity IDE for terminal resume. Linux Antigravity credential and usage
+integration remains unimplemented.
+
 ### IDE Terminal Resume Companion
 
 The optional companion extension lets a forced account switch return an active
@@ -94,11 +147,14 @@ terminal shell integration to capture the tool and working directory, then runs
 close for its credential replacement, the switcher reopens it and the extension
 creates a replacement terminal in the original workspace.
 
-```powershell
+```bash
 pnpm --dir ide-extension run package
 code --install-extension ide-extension/ai-account-switcher-resume.vsix --force
 antigravity-ide --install-extension ide-extension/ai-account-switcher-resume.vsix --force
 ```
+
+Packaging works on macOS/Linux with `zip` installed (included with macOS), and
+on Windows with PowerShell. The editor CLI must be available on your `PATH`.
 
 The bridge is local-only, does not copy credentials, and becomes a no-op when
 the extension is absent or no matching integrated-terminal command is active.
@@ -142,6 +198,14 @@ The tray popup also includes compact active-account stats for today and
 the last 7 days, while keeping the normal rate-limit refresh flow separate.
 
 ## Safe Account Switching
+
+The desktop dashboard automatically detects the current Codex login from
+`$CODEX_HOME/auth.json` (normally `~/.codex/auth.json`) on startup, when focused,
+and every 30 seconds. **Add current login** saves that session in the switcher
+without writing Codex's credentials or interrupting running sessions. Existing
+matching accounts are reused, preserving their names and masking settings;
+personal and team workspaces remain separate. This detection covers file-based
+Codex credentials; Keychain-only Codex logins are not discovered by this feature.
 
 ChatGPT can replace an OAuth refresh token after using it. Once replaced, the
 older token may no longer be accepted. Before Codex Switcher writes another
@@ -191,12 +255,32 @@ warming accounts late.
 
 ## Antigravity / Gemini
 
-On Windows, the **Antigravity / Gemini** section captures the currently signed-in
-Antigravity desktop session and lets you switch between captured sessions. The
-`agy.exe` CLI reads the same session, so it switches with the desktop account.
+On Windows and macOS, the **Antigravity / Gemini** section captures the currently
+signed-in Antigravity session and lets you switch between captured sessions.
+The `agy` CLI uses the shared credential (Windows Credential Manager or macOS
+Keychain). macOS uses Security.framework directly, keeping tokens out of command
+arguments. macOS may ask you to allow access to the `gemini` / `antigravity`
+Keychain item when capturing or switching.
 
-Quit Antigravity desktop before switching. Capture each account while it is
-signed in, then use **Switch** to restore that session later.
+Quit Antigravity desktop, Antigravity IDE, and `agy` before switching. Capture each
+account while it is signed in, then use **Switch** to restore that session later.
+Each capture becomes the active account because it represents the live login.
+
+On macOS, the switcher prefers the `Antigravity IDE` profile when present and
+otherwise uses `Antigravity`. If neither profile exists, it captures an agy-only
+Keychain session. Captures record which profile they belong to; installing or
+migrating the editor may require capturing accounts again. Newer IDE profiles
+no longer expose the legacy email/status field, so give these accounts distinct
+names. If their live credential changes and the account identity cannot be
+verified, the switcher asks you to capture the live session separately instead
+of overwriting an existing account with an unidentified login.
+
+The optional macOS read-only integration checks require a signed-in local session:
+
+```bash
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib keychain_read_smoke -- --ignored
+cargo test --locked --manifest-path src-tauri/Cargo.toml --lib live_usage_smoke -- --ignored
+```
 
 On macOS you can keep the machine awake with the built-in `caffeinate` command,
 which stops automatically when the app quits:

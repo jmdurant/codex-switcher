@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -288,7 +289,12 @@ fn open_antigravity_ide() -> bool {
         .is_some_and(|path| Command::new(path).spawn().is_ok())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn open_antigravity_ide() -> bool {
+    crate::auth::antigravity_macos::open_ide()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn open_antigravity_ide() -> bool {
     false
 }

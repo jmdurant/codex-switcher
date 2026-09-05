@@ -31,7 +31,7 @@
     "build": "node esbuild.mjs",
     "check": "tsc --noEmit",
     "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.mts",
-    "package": "pnpm run check && pnpm run test && pnpm run build && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package.ps1"
+    "package": "pnpm run check && pnpm run test && pnpm run build && node scripts/package.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

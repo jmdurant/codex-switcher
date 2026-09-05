@@ -20,7 +20,9 @@ use super::get_config_dir;
 
 const AUTH_STATUS_KEY: &str = "antigravityAuthStatus";
 const OAUTH_TOKEN_KEY: &str = "antigravityUnifiedStateSync.oauthToken";
+#[cfg(windows)]
 const CREDENTIAL_TARGET: &str = "gemini:antigravity";
+#[cfg(windows)]
 const CREDENTIAL_USER: &str = "antigravity";
 const USER_STATUS_PATH: &str = "/exa.language_server_pb.LanguageServerService/GetUserStatus";
 
@@ -28,6 +30,8 @@ static OPERATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Clone)]
 struct AntigravitySessionSnapshot {
+    keychain_only: bool,
+    profile_name: Option<String>,
     email: Option<String>,
     auth_status: String,
     oauth_token: String,
@@ -36,6 +40,10 @@ struct AntigravitySessionSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AntigravityAccount {
+    #[serde(default)]
+    keychain_only: bool,
+    #[serde(default)]
+    profile_name: Option<String>,
     id: String,
     name: String,
     email: Option<String>,
@@ -109,41 +117,52 @@ pub fn list_antigravity_accounts() -> Result<Vec<AntigravityAccountInfo>> {
 
 pub fn capture_antigravity_account(name: String) -> Result<AntigravityAccountInfo> {
     with_store(|store| {
-        let snapshot = account_from_snapshot(name, read_current_session_snapshot()?);
-        if store
+        insert_captured_account(
+            store,
+            account_from_snapshot(name, read_current_session_snapshot()?),
+        )
+    })
+}
+
+fn insert_captured_account(
+    store: &mut AntigravityAccountsStore,
+    snapshot: AntigravityAccount,
+) -> Result<AntigravityAccountInfo> {
+    if store
+        .accounts
+        .iter()
+        .any(|account| account.name == snapshot.name)
+    {
+        anyhow::bail!(
+            "An Antigravity account named '{}' already exists",
+            snapshot.name
+        );
+    }
+    if snapshot.email.as_ref().is_some_and(|email| {
+        store
             .accounts
             .iter()
-            .any(|account| account.name == snapshot.name)
-        {
-            anyhow::bail!(
-                "An Antigravity account named '{}' already exists",
-                snapshot.name
-            );
-        }
-        if snapshot.email.as_ref().is_some_and(|email| {
-            store
-                .accounts
-                .iter()
-                .any(|account| account.email.as_ref() == Some(email))
-        }) {
-            anyhow::bail!("This Antigravity account has already been captured");
-        }
+            .any(|account| account.email.as_ref() == Some(email))
+    }) {
+        anyhow::bail!("This Antigravity account has already been captured");
+    }
 
-        let is_first = store.accounts.is_empty();
-        store.accounts.push(snapshot.clone());
-        if is_first {
-            store.active_account_id = Some(snapshot.id.clone());
-        }
-        Ok(AntigravityAccountInfo::from_account(
-            &snapshot,
-            store.active_account_id.as_deref(),
-        ))
-    })
+    store.accounts.push(snapshot.clone());
+    // Capture always describes the live login, including accounts signed in
+    // outside the switcher. Keeping the first capture active corrupts the
+    // next reconciliation (or incorrectly blocks it as an identity mismatch).
+    store.active_account_id = Some(snapshot.id.clone());
+    Ok(AntigravityAccountInfo::from_account(
+        &snapshot,
+        store.active_account_id.as_deref(),
+    ))
 }
 
 pub fn switch_antigravity_account(account_id: &str, force: bool) -> Result<()> {
     let _lock = lock_operations()?;
-    if !force {
+    // The frontend force-close flow must actually finish before replacing
+    // credentials; a force flag is not proof that macOS processes exited.
+    if !force || cfg!(target_os = "macos") {
         ensure_antigravity_not_running()?;
     }
 
@@ -224,6 +243,7 @@ pub fn check_antigravity_processes() -> Result<AntigravityProcessInfo> {
     })
 }
 
+#[cfg(not(target_os = "macos"))]
 pub fn kill_antigravity_processes() -> Result<KillAntigravityProcessesResult> {
     let process_names = running_antigravity_processes()?;
     let targeted_count = process_names.len();
@@ -253,6 +273,11 @@ pub fn kill_antigravity_processes() -> Result<KillAntigravityProcessesResult> {
         killed_process_names,
         failed_process_names,
     })
+}
+
+#[cfg(target_os = "macos")]
+pub fn kill_antigravity_processes() -> Result<KillAntigravityProcessesResult> {
+    super::antigravity_macos::kill()
 }
 
 pub fn delete_antigravity_account(account_id: &str) -> Result<()> {
@@ -337,6 +362,11 @@ fn atomic_write_sensitive(path: &Path, contents: &[u8]) -> Result<()> {
             .write(true)
             .create_new(true)
             .open(&temp_path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            temp.set_permissions(fs::Permissions::from_mode(0o600))?;
+        }
         temp.write_all(contents)?;
         temp.sync_all()?;
         drop(temp);
@@ -399,12 +429,41 @@ fn replace_file(temp_path: &Path, path: &Path) -> Result<()> {
 }
 
 fn read_current_session_snapshot() -> Result<AntigravitySessionSnapshot> {
+    #[cfg(target_os = "macos")]
+    if !antigravity_profile_dir()?
+        .join("User/globalStorage/state.vscdb")
+        .exists()
+    {
+        return Ok(AntigravitySessionSnapshot {
+            keychain_only: true,
+            profile_name: None,
+            email: None,
+            auth_status: String::new(),
+            oauth_token: String::new(),
+            credential_base64: BASE64.encode(read_antigravity_credential()?),
+        });
+    }
     let connection = open_state_db()?;
+    #[cfg(not(target_os = "macos"))]
     let auth_status = read_state_value(&connection, AUTH_STATUS_KEY)?;
+    #[cfg(target_os = "macos")]
+    let auth_status = connection
+        .query_row(
+            "SELECT value FROM ItemTable WHERE key = ?1",
+            params![AUTH_STATUS_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .unwrap_or_default();
     let oauth_token = read_state_value(&connection, OAUTH_TOKEN_KEY)?;
     let credential = read_antigravity_credential()?;
 
     Ok(AntigravitySessionSnapshot {
+        keychain_only: false,
+        profile_name: antigravity_profile_dir()?
+            .file_name()
+            .and_then(|v| v.to_str())
+            .map(str::to_owned),
         email: email_from_auth_status(&auth_status),
         auth_status,
         oauth_token,
@@ -424,6 +483,8 @@ fn account_from_snapshot(name: String, snapshot: AntigravitySessionSnapshot) -> 
     };
 
     AntigravityAccount {
+        keychain_only: snapshot.keychain_only,
+        profile_name: snapshot.profile_name,
         id: Uuid::new_v4().to_string(),
         name,
         email: snapshot.email,
@@ -481,6 +542,17 @@ fn reconcile_active_account_snapshot(
         .find(|account| account.id == active_id)
         .context("Stored active Antigravity account was not found")?;
 
+    anyhow::ensure!(active.keychain_only == snapshot.keychain_only,
+        "The Antigravity installation changed since capture; capture the live session again before switching");
+    if let (Some(stored), Some(live)) = (&active.profile_name, &snapshot.profile_name) {
+        anyhow::ensure!(stored == live,
+            "The live Antigravity profile differs from the captured profile; capture the live session separately before switching");
+    }
+    if active.email.is_none() || snapshot.email.is_none() {
+        anyhow::ensure!(active.credential_base64 == snapshot.credential_base64,
+            "The live Antigravity credential changed, but this version does not expose an account identity. Capture the live session separately before switching so the wrong account is not overwritten");
+    }
+
     ensure_identity_matches(active.email.as_deref(), snapshot.email.as_deref(), &active.name)
         .context(
             "The live Antigravity session does not match the stored active account; capture the live session separately before switching",
@@ -489,6 +561,7 @@ fn reconcile_active_account_snapshot(
         active.email.clone_from(&snapshot.email);
     }
     active.auth_status.clone_from(&snapshot.auth_status);
+    active.profile_name.clone_from(&snapshot.profile_name);
     active.oauth_token.clone_from(&snapshot.oauth_token);
     active
         .credential_base64
@@ -498,6 +571,25 @@ fn reconcile_active_account_snapshot(
 
 fn write_session(account: &AntigravityAccount) -> Result<()> {
     validate_account_identity(account)?;
+    if account.keychain_only {
+        anyhow::ensure!(
+            cfg!(target_os = "macos"),
+            "This agy account requires macOS Keychain"
+        );
+        // Do not leave an installed editor's OAuth state paired with a different
+        // CLI credential. Recapture once an editor profile is installed.
+        anyhow::ensure!(!antigravity_profile_dir()?.join("User/globalStorage/state.vscdb").exists(),
+            "This agy account was captured without a desktop profile; capture it again with Antigravity installed before switching");
+        return write_antigravity_credential(
+            &BASE64
+                .decode(&account.credential_base64)
+                .context("Stored Antigravity credential is invalid")?,
+        );
+    }
+    if let Some(profile) = account.profile_name.as_deref() {
+        anyhow::ensure!(antigravity_profile_dir()?.file_name().and_then(|v| v.to_str()) == Some(profile),
+            "This account was captured from {profile}; the selected Antigravity profile has changed. Capture it again before switching");
+    }
     let mut connection = open_state_db()?;
     write_session_with(
         &mut connection,
@@ -518,7 +610,10 @@ fn write_session_with(
         .context("Stored Antigravity credential is invalid")?;
     let previous_credential = read_credential()?;
     let transaction = connection.transaction()?;
-    write_state_value(&transaction, AUTH_STATUS_KEY, &account.auth_status)?;
+    // Newer IDE versions no longer have the legacy auth-status field.
+    if !account.auth_status.is_empty() {
+        write_state_value(&transaction, AUTH_STATUS_KEY, &account.auth_status)?;
+    }
     write_state_value(&transaction, OAUTH_TOKEN_KEY, &account.oauth_token)?;
     write_credential(&credential).context(
         "Failed to update the Antigravity credential; database changes were rolled back",
@@ -561,10 +656,13 @@ fn antigravity_profile_dir() -> Result<PathBuf> {
     #[cfg(target_os = "macos")]
     {
         let home = dirs::home_dir().context("Could not find home directory")?;
-        return Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join("Antigravity"));
+        let support = home.join("Library").join("Application Support");
+        let ide = support.join("Antigravity IDE");
+        return Ok(if ide.join("User/globalStorage/state.vscdb").is_file() {
+            ide
+        } else {
+            support.join("Antigravity")
+        });
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
@@ -650,12 +748,22 @@ fn wide_null(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn read_antigravity_credential() -> Result<Vec<u8>> {
+    super::antigravity_macos::read_credential()
+}
+
+#[cfg(target_os = "macos")]
+fn write_antigravity_credential(value: &[u8]) -> Result<()> {
+    super::antigravity_macos::write_credential(value)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn read_antigravity_credential() -> Result<Vec<u8>> {
     anyhow::bail!("Antigravity credential capture is currently supported on Windows only")
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 fn write_antigravity_credential(_value: &[u8]) -> Result<()> {
     anyhow::bail!("Antigravity credential switching is currently supported on Windows only")
 }
@@ -697,7 +805,10 @@ fn running_antigravity_processes() -> Result<Vec<String>> {
         return Ok(running);
     }
 
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    return super::antigravity_macos::running();
+
+    #[cfg(not(any(windows, target_os = "macos")))]
     Ok(Vec::new())
 }
 
@@ -721,10 +832,13 @@ pub struct AntigravityUsageInfo {
 
 /// Read live quota data from the running Antigravity desktop language server.
 pub async fn get_live_antigravity_usage() -> Result<AntigravityUsageInfo> {
-    let servers = discover_language_servers()?;
+    let servers = tokio::task::spawn_blocking(discover_language_servers).await??;
     let body = serde_json::json!({ "wrapper_data": {} });
     let client = reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
+        .no_proxy()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(5))
         .build()
         .context("Failed to create Antigravity quota client")?;
     let mut headers = HeaderMap::new();
@@ -896,7 +1010,12 @@ fn parse_argument_value(value: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn discover_language_servers() -> Result<Vec<(Vec<u16>, String)>> {
+    super::antigravity_macos::discover_language_servers()
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn discover_language_servers() -> Result<Vec<(Vec<u16>, String)>> {
     anyhow::bail!("Live Antigravity usage is currently supported on Windows only")
 }
@@ -908,6 +1027,8 @@ mod tests {
 
     fn snapshot(email: Option<&str>, suffix: &str) -> AntigravitySessionSnapshot {
         AntigravitySessionSnapshot {
+            keychain_only: false,
+            profile_name: None,
             email: email.map(str::to_string),
             auth_status: email
                 .map(|email| serde_json::json!({ "email": email }).to_string())
@@ -1049,6 +1170,101 @@ mod tests {
             "oauth-new"
         );
         assert_eq!(&*written_credential.borrow(), b"credential-new");
+    }
+
+    #[test]
+    fn newer_ide_session_does_not_create_legacy_auth_status() {
+        let mut connection = state_database("old-auth", "old-oauth");
+        connection
+            .execute(
+                "DELETE FROM ItemTable WHERE key = ?1",
+                params![AUTH_STATUS_KEY],
+            )
+            .unwrap();
+        let mut target = account(None, "new");
+        target.auth_status.clear();
+        write_session_with(&mut connection, &target, || Ok(b"old".to_vec()), |_| Ok(())).unwrap();
+        assert!(read_state_value(&connection, AUTH_STATUS_KEY).is_err());
+        assert_eq!(
+            read_state_value(&connection, OAUTH_TOKEN_KEY).unwrap(),
+            "oauth-new"
+        );
+    }
+
+    #[test]
+    fn capturing_another_live_login_updates_the_active_account() {
+        let mut store = AntigravityAccountsStore::default();
+        let first = account(Some("first@example.com"), "first");
+        let second = account(Some("second@example.com"), "second");
+        insert_captured_account(&mut store, first.clone()).unwrap();
+        let captured = insert_captured_account(&mut store, second.clone()).unwrap();
+        assert!(captured.is_active);
+        assert_eq!(store.active_account_id.as_deref(), Some(second.id.as_str()));
+        assert_eq!(store.accounts[0].credential_base64, first.credential_base64);
+        reconcile_active_account_snapshot(
+            &mut store,
+            &snapshot(Some("second@example.com"), "rotated"),
+        )
+        .unwrap();
+        assert_eq!(store.accounts[0].credential_base64, first.credential_base64);
+        assert_eq!(store.accounts[1].oauth_token, "oauth-rotated");
+    }
+
+    #[test]
+    fn changed_unidentified_session_does_not_overwrite_captured_account() {
+        let stored = account(None, "old");
+        let mut store = AntigravityAccountsStore {
+            version: 1,
+            active_account_id: Some(stored.id.clone()),
+            accounts: vec![stored],
+        };
+        assert!(reconcile_active_account_snapshot(&mut store, &snapshot(None, "new")).is_err());
+        assert_eq!(store.accounts[0].oauth_token, "oauth-old");
+        reconcile_active_account_snapshot(&mut store, &snapshot(None, "old")).unwrap();
+    }
+
+    #[test]
+    fn profile_migration_does_not_overwrite_the_old_profile_snapshot() {
+        let mut stored = account(Some("person@example.com"), "old");
+        stored.profile_name = Some("Antigravity".into());
+        let mut store = AntigravityAccountsStore {
+            version: 1,
+            active_account_id: Some(stored.id.clone()),
+            accounts: vec![stored],
+        };
+        let mut live = snapshot(Some("person@example.com"), "new");
+        live.profile_name = Some("Antigravity IDE".into());
+        assert!(reconcile_active_account_snapshot(&mut store, &live).is_err());
+        assert_eq!(store.accounts[0].oauth_token, "oauth-old");
+    }
+
+    #[test]
+    fn database_commit_failure_restores_the_previous_credential() {
+        let mut connection = state_database("old-auth", "old-oauth");
+        connection.execute_batch("PRAGMA foreign_keys = ON;
+            CREATE TABLE parent (id INTEGER PRIMARY KEY);
+            CREATE TABLE child (id INTEGER REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
+            CREATE TRIGGER fail_commit AFTER UPDATE ON ItemTable BEGIN INSERT INTO child VALUES (1); END;").unwrap();
+        let target = account(Some("person@example.com"), "new");
+        let writes = RefCell::new(Vec::new());
+        let result = write_session_with(
+            &mut connection,
+            &target,
+            || Ok(b"credential-old".to_vec()),
+            |value| {
+                writes.borrow_mut().push(value.to_vec());
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            *writes.borrow(),
+            vec![b"credential-new".to_vec(), b"credential-old".to_vec()]
+        );
+        assert_eq!(
+            read_state_value(&connection, OAUTH_TOKEN_KEY).unwrap(),
+            "old-oauth"
+        );
     }
 
     #[test]

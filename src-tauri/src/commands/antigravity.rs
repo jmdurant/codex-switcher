@@ -17,7 +17,10 @@ pub async fn list_antigravity_accounts() -> Result<Vec<AntigravityAccountInfo>, 
 pub async fn capture_current_antigravity_account(
     name: String,
 ) -> Result<AntigravityAccountInfo, String> {
-    capture_antigravity_account(name).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || capture_antigravity_account(name))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -25,7 +28,10 @@ pub async fn switch_antigravity_account(
     account_id: String,
     force: Option<bool>,
 ) -> Result<(), String> {
-    switch_snapshot(&account_id, force.unwrap_or(false)).map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(move || switch_snapshot(&account_id, force.unwrap_or(false)))
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
@@ -42,10 +48,16 @@ pub async fn get_antigravity_usage() -> Result<AntigravityUsageInfo, String> {
 
 #[tauri::command]
 pub async fn check_antigravity_processes() -> Result<AntigravityProcessInfo, String> {
-    check_processes().map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(check_processes)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{error:#}"))
 }
 
 #[tauri::command]
 pub async fn kill_antigravity_processes() -> Result<KillAntigravityProcessesResult, String> {
-    kill_processes().map_err(|error| error.to_string())
+    tokio::task::spawn_blocking(kill_processes)
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("{error:#}"))
 }

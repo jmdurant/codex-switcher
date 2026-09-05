@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "install:macos": "node scripts/install-macos.mjs",
+    "install:extensions:macos": "pnpm --dir ide-extension run package && node scripts/install-extensions-macos.mjs",
     "test:reset-credits": "node --experimental-strip-types --test tests/resetCredits.test.ts",
     "preview": "vite preview",
     "tauri": "sh ./scripts/tauri.sh",
