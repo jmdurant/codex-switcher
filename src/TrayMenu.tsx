@@ -17,7 +17,7 @@ import {
   readAutoWarmupAllEnabled,
   writeAutoWarmupAllEnabled,
 } from "./lib/autoWarmup";
-import { accountClassLabel, classifyAccount } from "./lib/accountPriority";
+import { accountClassLabel, classifyAccount, compareAccountAvailability } from "./lib/accountPriority";
 
 const TRAY_REFRESH_EVENT = "tray-refresh";
 const ACCOUNTS_CHANGED_EVENT = "accounts-changed";
@@ -132,52 +132,6 @@ function retainUsageForAccounts(
       usageById[account.id] ? [[account.id, usageById[account.id]]] : []
     )
   );
-}
-
-function trayRemainingPercent(account: AccountInfo, usageById: Record<string, UsageInfo>): number | null {
-  const usage = usageById[account.id];
-  if (!usage || usage.error) return null;
-
-  const used = usage.primary_used_percent ?? usage.secondary_used_percent;
-  return used === null || used === undefined || !Number.isFinite(used)
-    ? null
-    : Math.max(0, Math.min(100, 100 - used));
-}
-
-function trayResetAt(account: AccountInfo, usageById: Record<string, UsageInfo>): number | null {
-  const usage = usageById[account.id];
-  if (!usage || usage.error) return null;
-
-  const hasPrimaryWindow = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
-  const resetAt = hasPrimaryWindow ? usage.primary_resets_at : usage.secondary_resets_at;
-  return resetAt && Number.isFinite(resetAt) ? resetAt : null;
-}
-
-function compareTrayAccounts(
-  left: AccountInfo,
-  right: AccountInfo,
-  usageById: Record<string, UsageInfo>
-): number {
-  if (left.is_active !== right.is_active) return left.is_active ? -1 : 1;
-
-  const leftRemaining = trayRemainingPercent(left, usageById);
-  const rightRemaining = trayRemainingPercent(right, usageById);
-  const leftHasRemaining = leftRemaining !== null && leftRemaining > 0;
-  const rightHasRemaining = rightRemaining !== null && rightRemaining > 0;
-
-  if (leftHasRemaining !== rightHasRemaining) return leftHasRemaining ? -1 : 1;
-  if (leftHasRemaining && rightHasRemaining) {
-    const remainingDifference = rightRemaining - leftRemaining;
-    if (remainingDifference !== 0) return remainingDifference;
-
-    const leftResetAt = trayResetAt(left, usageById);
-    const rightResetAt = trayResetAt(right, usageById);
-    if (leftResetAt !== null && rightResetAt !== null) return leftResetAt - rightResetAt;
-    if (leftResetAt !== null) return -1;
-    if (rightResetAt !== null) return 1;
-  }
-
-  return left.name.localeCompare(right.name);
 }
 
 function TrayMenu() {
@@ -438,7 +392,7 @@ function TrayMenu() {
         ) : (
           accounts
             .slice()
-            .sort((a, b) => compareTrayAccounts(a, b, usageById))
+            .sort((a, b) => compareAccountAvailability(a, b, usageById[a.id], usageById[b.id]))
             .map((account, idx, sorted) => {
             const plan = formatPlan(account.plan_type);
             const usage = usageById[account.id];

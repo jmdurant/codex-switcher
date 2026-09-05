@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { classifyAccount, isUsageExhausted, selectFallbackAccount } from "../src/lib/accountPriority.ts";
+import { compareAccountAvailability, classifyAccount, isUsageExhausted, selectFallbackAccount } from "../src/lib/accountPriority.ts";
 import type { AccountWithUsage, UsageInfo } from "../src/types/index.ts";
 
 function usage(overrides: Partial<UsageInfo> = {}): UsageInfo {
@@ -52,4 +52,28 @@ test("skips exhausted fallbacks", () => {
     account("team", "team"),
   ], "active");
   assert.equal(selected?.id, "team");
+});
+
+test("shared display ordering pins active, then ranks availability, tier and remaining quota", () => {
+  const active = { ...account("active", "quorum", usage({ primary_used_percent: 100 })), is_active: true };
+  const list = [
+    account("exhausted", "self_serve_business_prolite", usage({ secondary_used_percent: 100 })),
+    account("team", "team", usage({ primary_used_percent: 0 })),
+    account("tenx-low", "self_serve_business_prolite", usage({ primary_used_percent: 80 })),
+    account("tenx-high", "self_serve_business_prolite", usage({ primary_used_percent: 10 })),
+    account("unknown", "team", usage({ error: "unavailable" })),
+    active,
+  ];
+  list.sort((a, b) => compareAccountAvailability(a, b, a.usage, b.usage));
+  assert.deepEqual(list.map(a => a.id), ["active", "tenx-high", "tenx-low", "team", "exhausted", "unknown"]);
+});
+
+test("shared display ordering handles missing quotas and breaks ties deterministically", () => {
+  const available = account("available", "quorum");
+  const missing = { ...account("missing", "team"), usage: undefined };
+  assert.ok(compareAccountAvailability(available, missing, available.usage, missing.usage) < 0);
+  const a = account("a", "team");
+  const b = account("b", "team");
+  assert.ok(compareAccountAvailability(a, b, a.usage, b.usage) < 0);
+  assert.equal(compareAccountAvailability(a, a, a.usage, a.usage), 0);
 });

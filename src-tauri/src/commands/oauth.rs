@@ -28,7 +28,60 @@ static PENDING_OAUTH: Mutex<Option<PendingOAuth>> = Mutex::new(None);
 /// Start the OAuth login flow
 #[tauri::command]
 pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String> {
-    start_login_for_target(account_name.trim().to_string(), PendingOAuthTarget::Add).await
+    let login_hint = email_from_account_name(&account_name);
+    start_login_for_target(
+        account_name.trim().to_string(),
+        PendingOAuthTarget::Add,
+        login_hint,
+    )
+    .await
+}
+
+// The optional name field also accepts an email for the browser sign-in.
+// Leave display names alone rather than treating them as login identifiers.
+fn email_from_account_name(name: &str) -> Option<String> {
+    let email = name.trim();
+    let (local, domain) = email.split_once('@')?;
+    if local.is_empty()
+        || domain.is_empty()
+        || domain.contains('@')
+        || !domain.contains('.')
+        || domain.starts_with('.')
+        || domain.ends_with('.')
+        || email.chars().any(char::is_whitespace)
+    {
+        return None;
+    }
+    Some(email.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::email_from_account_name;
+
+    #[test]
+    fn add_account_carries_email_forward_without_changing_it() {
+        assert_eq!(
+            email_from_account_name(" Person+team@example.com "),
+            Some("Person+team@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn display_names_and_blank_names_do_not_become_login_hints() {
+        for name in [
+            "",
+            "  ",
+            "Work",
+            "Work account",
+            "Team @ work",
+            "@example.com",
+            "a@@example.com",
+            "a@",
+        ] {
+            assert_eq!(email_from_account_name(name), None, "{name}");
+        }
+    }
 }
 
 /// Start an OAuth flow that replaces an existing ChatGPT account in place.
@@ -41,12 +94,18 @@ pub async fn start_relogin(account_id: String) -> Result<OAuthLoginInfo, String>
         return Err("Only ChatGPT OAuth accounts can be re-authenticated".to_string());
     }
 
-    start_login_for_target(account.name, PendingOAuthTarget::Relogin(account_id)).await
+    start_login_for_target(
+        account.name,
+        PendingOAuthTarget::Relogin(account_id),
+        account.email,
+    )
+    .await
 }
 
 async fn start_login_for_target(
     account_name: String,
     target: PendingOAuthTarget,
+    login_hint: Option<String>,
 ) -> Result<OAuthLoginInfo, String> {
     // Cancel any previous pending flow so it does not keep the callback port occupied.
     if let Some(previous) = {
@@ -56,7 +115,7 @@ async fn start_login_for_target(
         previous.cancelled.store(true, Ordering::Relaxed);
     }
 
-    let (info, rx, cancelled) = start_oauth_login(account_name)
+    let (info, rx, cancelled) = start_oauth_login(account_name, login_hint)
         .await
         .map_err(|e| e.to_string())?;
 

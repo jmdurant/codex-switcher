@@ -1,4 +1,4 @@
-import type { AccountWithUsage, UsageInfo } from "../types";
+import type { AccountInfo, AccountWithUsage, UsageInfo } from "../types";
 
 export type AccountClass = "team_10x" | "team" | "quorum" | "other";
 
@@ -44,6 +44,43 @@ const CLASS_PRIORITY: Record<AccountClass, number> = {
   other: 3,
 };
 
+function displayRemaining(usage: UsageInfo | undefined): number | null {
+  if (!usage || usage.error) return null;
+  const used = usage.primary_used_percent ?? usage.secondary_used_percent;
+  return typeof used === "number" && Number.isFinite(used)
+    ? Math.max(0, Math.min(100, 100 - used))
+    : null;
+}
+
+/** Shared ordering for the tray and the main account list. */
+export function compareAccountAvailability(
+  left: AccountInfo,
+  right: AccountInfo,
+  leftUsage?: UsageInfo,
+  rightUsage?: UsageInfo,
+): number {
+  if (left.is_active !== right.is_active) return left.is_active ? -1 : 1;
+  const leftRemaining = displayRemaining(leftUsage);
+  const rightRemaining = displayRemaining(rightUsage);
+  const leftAvailable = leftRemaining !== null && leftRemaining > 0 && !isUsageExhausted(leftUsage);
+  const rightAvailable = rightRemaining !== null && rightRemaining > 0 && !isUsageExhausted(rightUsage);
+  if (leftAvailable !== rightAvailable) return leftAvailable ? -1 : 1;
+
+  const tierDifference = CLASS_PRIORITY[classifyAccount(left.plan_type)] - CLASS_PRIORITY[classifyAccount(right.plan_type)];
+  if (tierDifference !== 0) return tierDifference;
+  if (leftAvailable && rightAvailable) {
+    const remainingDifference = rightRemaining - leftRemaining;
+    if (remainingDifference !== 0) return remainingDifference;
+    const resetAt = (usage: UsageInfo | undefined) => {
+      const value = usage?.primary_used_percent != null ? usage.primary_resets_at : usage?.secondary_resets_at;
+      return value != null && Number.isFinite(value) ? value : Number.MAX_VALUE;
+    };
+    const resetDifference = resetAt(leftUsage) - resetAt(rightUsage);
+    if (resetDifference !== 0) return resetDifference;
+  }
+  return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
+}
+
 /** Select the best live, non-active fallback in the requested tier order. */
 export function selectFallbackAccount(
   accounts: AccountWithUsage[],
@@ -64,4 +101,3 @@ export function selectFallbackAccount(
       return remaining(right.usage) - remaining(left.usage);
     })[0];
 }
-

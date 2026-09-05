@@ -45,7 +45,7 @@ import {
   type AutoWarmupWindow,
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
-import { isUsageExhausted, selectFallbackAccount } from "./lib/accountPriority";
+import { compareAccountAvailability, isUsageExhausted, selectFallbackAccount } from "./lib/accountPriority";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
@@ -266,13 +266,14 @@ function App() {
   const [isAccountSearchOpen, setIsAccountSearchOpen] = useState(false);
   const isAccountSearchEnabled = accounts.length >= ACCOUNT_SEARCH_THRESHOLD;
   const [otherAccountsSort, setOtherAccountsSort] = useState<
+    | "availability"
     | "deadline_asc"
     | "deadline_desc"
     | "remaining_desc"
     | "remaining_asc"
     | "subscription_asc"
     | "subscription_desc"
-  >("deadline_asc");
+  >("availability");
   const [isActionsMenuOpen, setIsActionsMenuOpen] = useState(false);
   const [isNavMenuOpen, setIsNavMenuOpen] = useState(false);
   const actionsMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1383,6 +1384,9 @@ function App() {
     };
 
     return [...otherAccounts].sort((a, b) => {
+      if (otherAccountsSort === "availability") {
+        return compareAccountAvailability(a, b, a.usage, b.usage);
+      }
       if (
         otherAccountsSort === "subscription_asc" ||
         otherAccountsSort === "subscription_desc"
@@ -2183,6 +2187,7 @@ function App() {
                         className="flex items-center gap-2 pl-3 pr-2.5 py-2 rounded-xl border border-gray-300 dark:border-gray-700 bg-gradient-to-b from-white to-gray-50 dark:from-gray-900 dark:to-gray-800 text-xs sm:text-sm font-medium text-gray-700 dark:text-gray-200 shadow-sm hover:border-gray-400 dark:hover:border-gray-600 transition-all focus:outline-none focus:ring-2 focus:ring-gray-300 dark:focus:ring-gray-600"
                       >
                         <span>
+                          {otherAccountsSort === "availability" && "Availability & plan priority"}
                           {otherAccountsSort === "deadline_asc" && "Reset: earliest to latest"}
                           {otherAccountsSort === "deadline_desc" && "Reset: latest to earliest"}
                           {otherAccountsSort === "remaining_desc" && "% remaining: high → low"}
@@ -2198,6 +2203,7 @@ function App() {
                         <div className="absolute right-0 z-30 mt-1 w-56 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 shadow-lg py-1 text-sm">
                           {(
                             [
+                              { value: "availability",       label: "Availability & plan priority" },
                               { value: "deadline_asc",       label: "Reset: earliest to latest" },
                               { value: "deadline_desc",      label: "Reset: latest to earliest" },
                               { value: "remaining_desc",     label: "% remaining: high → low" },
@@ -2420,6 +2426,7 @@ function App() {
         isOpen={reloginAccountId !== null}
         mode="relogin"
         accountName={accounts.find((account) => account.id === reloginAccountId)?.name}
+        accountEmail={accounts.find((account) => account.id === reloginAccountId)?.email ?? undefined}
         onClose={() => setReloginAccountId(null)}
         onImportFile={importFromFile}
         onStartOAuth={() => {

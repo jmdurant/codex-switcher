@@ -11,6 +11,7 @@ interface AddAccountModalProps {
   isOpen: boolean;
   mode?: "add" | "relogin";
   accountName?: string;
+  accountEmail?: string;
   onClose: () => void;
   onImportFile: (source: FileSource, name: string) => Promise<void>;
   onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
@@ -24,6 +25,7 @@ export function AddAccountModal({
   isOpen,
   mode = "add",
   accountName,
+  accountEmail,
   onClose,
   onImportFile,
   onStartOAuth,
@@ -38,6 +40,7 @@ export function AddAccountModal({
   const [oauthPending, setOauthPending] = useState(false);
   const [authUrl, setAuthUrl] = useState<string>("");
   const [copied, setCopied] = useState<boolean>(false);
+  const [emailCopied, setEmailCopied] = useState(false);
   const isPrimaryDisabled = loading || (activeTab === "oauth" && oauthPending);
   const tauriRuntime = isTauriRuntime();
 
@@ -49,6 +52,35 @@ export function AddAccountModal({
     setLoading(false);
     setOauthPending(false);
     setAuthUrl("");
+    setEmailCopied(false);
+  };
+
+  const copyEmail = async () => {
+    if (!accountEmail) return;
+    try {
+      await navigator.clipboard.writeText(accountEmail);
+      setEmailCopied(true);
+    } catch {
+      setEmailCopied(false);
+      setError("Couldn't copy the email. Copy it from the account details above.");
+    }
+  };
+
+  const handleOpenLogin = async (url = authUrl, shouldCopy = true) => {
+    if (shouldCopy) setError(null);
+    const copying = shouldCopy && mode === "relogin" ? copyEmail() : Promise.resolve();
+    try {
+      if (tauriRuntime) {
+        await copying;
+        await openExternalUrl(url);
+      } else {
+        // Browser popups must open during the click's user activation.
+        await openExternalUrl(url);
+        await copying;
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const handleClose = () => {
@@ -63,10 +95,18 @@ export function AddAccountModal({
     try {
       setLoading(true);
       setError(null);
+      // Start clipboard access during the click, before awaiting the login link.
+      const copying = tauriRuntime && mode === "relogin" ? copyEmail() : Promise.resolve();
       const info = await onStartOAuth(mode === "relogin" ? (accountName ?? "") : name.trim());
       setAuthUrl(info.auth_url);
       setOauthPending(true);
       setLoading(false);
+
+      if (tauriRuntime) {
+        await copying;
+        // Opening failures leave the link available and the callback listening.
+        await handleOpenLogin(info.auth_url, false);
+      }
 
       // Wait for completion
       await onCompleteOAuth();
@@ -153,7 +193,7 @@ export function AddAccountModal({
           {/* Account name is optional; the backend derives one when blank. */}
           {mode === "add" ? <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Account Name (optional)
+              {activeTab === "oauth" ? "Email or Account Name (optional)" : "Account Name (optional)"}
             </label>
             <input
               type="text"
@@ -168,6 +208,16 @@ export function AddAccountModal({
               <p className="mt-1 truncate text-sm font-medium text-gray-900 dark:text-gray-100">
                 {accountName}
               </p>
+              {accountEmail && (
+                <div className="mt-1 flex items-center gap-2">
+                  <span className="break-all text-sm text-gray-700 dark:text-gray-300">{accountEmail}</span>
+                  <button
+                    type="button"
+                    onClick={() => void copyEmail()}
+                    className="shrink-0 rounded border border-gray-300 px-2 py-1 text-xs dark:border-gray-600"
+                  >{emailCopied ? "Copied!" : "Copy email"}</button>
+                </div>
+              )}
               <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
                 Sign in to the same ChatGPT account. A different account will be rejected.
               </p>
@@ -182,7 +232,9 @@ export function AddAccountModal({
                   <div className="animate-spin h-8 w-8 border-2 border-gray-900 dark:border-gray-100 border-t-transparent rounded-full mx-auto mb-3"></div>
                   <p className="text-gray-700 dark:text-gray-300 font-medium mb-2">Waiting for browser login...</p>
                   <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                    Please open the following link in your browser to proceed:
+                    {tauriRuntime
+                      ? "Finish signing in in your browser. If it didn’t open, use Open below."
+                      : "Please open the following link in your browser to proceed:"}
                   </p>
                   <div className="flex items-center gap-2 mb-2 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg border border-gray-200 dark:border-gray-700">
                     <input
@@ -196,6 +248,7 @@ export function AddAccountModal({
                         void navigator.clipboard
                           .writeText(authUrl)
                           .then(() => {
+                            setEmailCopied(false);
                             setCopied(true);
                             setTimeout(() => setCopied(false), 2000);
                           })
@@ -212,14 +265,19 @@ export function AddAccountModal({
                       {copied ? "Copied!" : "Copy"}
                     </button>
                     <button
-                      onClick={() => {
-                        void openExternalUrl(authUrl);
-                      }}
+                      onClick={() => void handleOpenLogin()}
                       className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 border border-gray-900 dark:border-gray-100 rounded text-xs font-medium text-white dark:text-gray-900 transition-colors shrink-0"
                     >
                       Open
                     </button>
                   </div>
+                  {mode === "relogin" && accountEmail && (
+                    <p className="mb-3 text-xs text-gray-500 dark:text-gray-400">
+                      {emailCopied
+                        ? "Email copied as a fallback if the sign-in page asks for it."
+                        : "Open also copies this account’s email for you to paste into the sign-in page."}
+                    </p>
+                  )}
                   {!tauriRuntime && (
                     <p className="text-xs text-amber-600">
                       OAuth login must finish on the same host machine because the callback
@@ -229,8 +287,9 @@ export function AddAccountModal({
                 </div>
               ) : (
                 <p>
-                  Click the button below to generate a {mode === "relogin" ? "re-login" : "login"} link.
-                  You will need to open it in your browser to authenticate.
+                  {tauriRuntime
+                    ? "Continue to open your browser and sign in. This dialog will close when you finish."
+                    : "Generate a login link, then open it in your browser to sign in."}
                 </p>
               )}
             </div>
@@ -282,7 +341,9 @@ export function AddAccountModal({
             {loading
               ? mode === "relogin" ? "Starting..." : "Adding..."
               : activeTab === "oauth"
-                ? mode === "relogin" ? "Generate Re-login Link" : "Generate Login Link"
+                ? oauthPending ? "Waiting for sign-in…" : tauriRuntime
+                  ? mode === "relogin" ? "Re-login in Browser" : "Sign in with ChatGPT"
+                  : mode === "relogin" ? "Generate Re-login Link" : "Generate Login Link"
                 : "Import"}
           </button>
         </div>

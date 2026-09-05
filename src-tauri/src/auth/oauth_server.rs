@@ -54,8 +54,9 @@ fn build_authorize_url(
     redirect_uri: &str,
     pkce: &PkceCodes,
     state: &str,
+    login_hint: Option<&str>,
 ) -> String {
-    let params = [
+    let mut params = vec![
         ("response_type", "code"),
         ("client_id", client_id),
         ("redirect_uri", redirect_uri),
@@ -67,6 +68,12 @@ fn build_authorize_url(
         ("state", state),
         ("originator", "codex_cli_rs"), // Required by OpenAI OAuth
     ];
+
+    // The hosted page decides whether to prefill or skip the email step.
+    // Re-login identity is still validated when the callback completes.
+    if let Some(email) = login_hint.map(str::trim).filter(|email| !email.is_empty()) {
+        params.push(("login_hint", email));
+    }
 
     let query_string = params
         .iter()
@@ -132,6 +139,7 @@ pub struct OAuthLoginResult {
 /// Start the OAuth login flow
 pub async fn start_oauth_login(
     account_name: String,
+    login_hint: Option<String>,
 ) -> Result<(
     OAuthLoginInfo,
     oneshot::Receiver<Result<OAuthLoginResult>>,
@@ -164,11 +172,17 @@ pub async fn start_oauth_login(
     };
 
     let redirect_uri = format!("http://localhost:{actual_port}/auth/callback");
-    let auth_url = build_authorize_url(DEFAULT_ISSUER, CLIENT_ID, &redirect_uri, &pkce, &state);
+    let auth_url = build_authorize_url(
+        DEFAULT_ISSUER,
+        CLIENT_ID,
+        &redirect_uri,
+        &pkce,
+        &state,
+        login_hint.as_deref(),
+    );
 
     println!("[OAuth] Server started on port {actual_port}");
     println!("[OAuth] Redirect URI: {redirect_uri}");
-    println!("[OAuth] Auth URL: {auth_url}");
 
     let login_info = OAuthLoginInfo {
         auth_url: auth_url.clone(),
@@ -394,4 +408,50 @@ pub async fn wait_for_oauth_login(
 ) -> Result<StoredAccount> {
     let result = rx.await.context("OAuth login was cancelled")??;
     Ok(result.account)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relogin_hint_preserves_email_and_oauth_parameters() {
+        let pkce = generate_pkce();
+        let url = build_authorize_url(
+            DEFAULT_ISSUER,
+            CLIENT_ID,
+            "http://localhost:1455/auth/callback",
+            &pkce,
+            "test-state",
+            Some(" person+team@example.com "),
+        );
+        let parsed = reqwest::Url::parse(&url).unwrap();
+        let params: std::collections::HashMap<_, _> = parsed.query_pairs().collect();
+        assert_eq!(params.get("login_hint").unwrap(), "person+team@example.com");
+        assert_eq!(params.get("state").unwrap(), "test-state");
+        assert_eq!(params.get("code_challenge").unwrap(), &pkce.code_challenge);
+        assert_eq!(
+            params.get("redirect_uri").unwrap(),
+            "http://localhost:1455/auth/callback"
+        );
+    }
+
+    #[test]
+    fn missing_or_blank_email_omits_hint() {
+        let pkce = generate_pkce();
+        for hint in [None, Some(""), Some("  ")] {
+            let url = build_authorize_url(
+                DEFAULT_ISSUER,
+                CLIENT_ID,
+                "http://localhost:1455/auth/callback",
+                &pkce,
+                "test-state",
+                hint,
+            );
+            assert!(!reqwest::Url::parse(&url)
+                .unwrap()
+                .query_pairs()
+                .any(|(key, _)| key == "login_hint"));
+        }
+    }
 }
