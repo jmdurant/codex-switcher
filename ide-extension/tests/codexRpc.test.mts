@@ -82,3 +82,13 @@ test("automatic discovery accepts only root interactive CLI threads", async () =
     finally { reader.dispose(); }
   }
 });
+
+test("native-owned discovery reads the authoritative cwd without requiring shell metadata or goals", async () => {
+  const reader = new CodexReader(async () => ({ executable: process.execPath,
+    args: ['-e', fixture.replace('cwd:process.cwd()', "cwd:process.cwd(),source:'cli',parentThreadId:null").replace("status:'active'", "status:'unsupported'")] }));
+  try {
+    assert.deepEqual(await reader.interactiveSession(id), {cwd: process.cwd()});
+    await assert.rejects(reader.readGoal(id, "/wrong-workspace"), /workspace/);
+    await assert.rejects(reader.readGoal(id, process.cwd()), /unsupported/);
+  } finally { reader.dispose(); }
+});

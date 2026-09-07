@@ -158,3 +158,29 @@ process, started by the npm shim at editor reload. Its shim did not pass
 and spawns it hidden. A live read with the new resolver succeeded. Type checking
 and all 52 extension tests passed. No account credentials changed and no resets
 were redeemed in this follow-up.
+
+## September 7, 4:23 PM switch follow-up
+
+The ready bridge request `cf9549c3-8283-4d47-900d-7d635ae33380` captured one
+Codex session in the codex-switcher editor and zero in the DroneCapture editor.
+The editor logs record three original terminal command exits around 16:23:55–57.
+The bridge became ready at approximately 16:24:08. A currently running exact
+resume process was created at 16:24:13; another CLI process started at 16:25:08.
+The old extension's untimestamped "Resumed" message only establishes command
+submission. It does not establish successful startup or identify whether later
+launches were manual. The transient console windows have not been attributed.
+
+Companion 0.2.5 removes shell cwd and goal-read dependencies from native-owned
+session discovery: it reads the authoritative cwd from the exact process-owned
+root CLI thread. Goal operations still validate the captured workspace. Unknown
+sessions in separate terminals sharing a directory are no longer deduplicated
+by directory. Resume logs now distinguish command submission from a native
+ownership check, include timestamps, and report observed startup exits.
+
+Validation: type checking, all 77 extension tests, packaging, and read-only
+metadata reads for both currently running CLI sessions passed. Added regressions
+cover missing/stale shell cwd, unavailable goal reads, separate unlinked terminals,
+and startup exit reporting. Installed 0.2.5 in Antigravity IDE and VS Code and
+verified both installed JavaScript hashes against the build. Open editor hosts
+still need reload. No account switch, terminal restart, or reset redemption was
+performed during this investigation; live recovery remains unverified.

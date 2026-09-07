@@ -177,6 +177,7 @@ async function pollCapacityRetries(): Promise<void> {
 
 const activeExecutions = new Map<vscode.Terminal, ActiveExecution>();
 const terminalExecutions = new Map<vscode.Terminal, vscode.TerminalShellExecution>();
+const resumeAttempts = new Map<vscode.Terminal, { sessionId?: string; startedAt: number; execution?: vscode.TerminalShellExecution; verified?: boolean }>();
 const acknowledgedRequests = new Set<string>();
 const resumedResponses = new Set<string>();
 const codexReader = new CodexReader();
@@ -271,12 +272,16 @@ function refreshDiscovery(): Promise<void> {
       if (!pid || stopped || !enabled()) continue;
       let active = activeExecutions.get(terminal);
       if (active && active.tool !== "codex") continue;
-      const cwd = active?.cwd ?? terminal.shellIntegration?.cwd?.fsPath;
-      if (!cwd) continue;
       const candidates = owners.filter(owner => owner.ancestors.includes(pid));
       let uncertain = false;
+      const directories = new Map<string, string>();
       const verified = await Promise.all(candidates.map(async owner => {
-        try { return await codexReader.isInteractiveSession(owner.sessionId, cwd) ? owner : undefined; }
+        try {
+          const session = await codexReader.interactiveSession(owner.sessionId);
+          if (!session) return undefined;
+          directories.set(owner.sessionId, session.cwd);
+          return owner;
+        }
         catch { uncertain = true; return undefined; }
       }));
       if (stopped || !enabled() || activeExecutions.get(terminal) !== active) continue;
@@ -289,13 +294,15 @@ function refreshDiscovery(): Promise<void> {
         }
         continue;
       }
+      const cwd = directories.get(owner.sessionId)!;
       try {
-        await codexReader.readGoal(owner.sessionId, cwd);
         if (stopped || !enabled() || !vscode.window.terminals.includes(terminal) || activeExecutions.get(terminal) !== active) continue;
         if (!active) {
           active = { tool: "codex", cwd, terminalProcessId: pid, discovered: true };
           activeExecutions.set(terminal, active);
         }
+        active.cwd = cwd;
+        active.terminalProcessId = pid;
         if (active.sessionId !== owner.sessionId) {
           active.retryPrompt?.invalidate();
           retryPending.delete(terminal);
@@ -304,6 +311,11 @@ function refreshDiscovery(): Promise<void> {
           output.appendLine("Automatically identified the Codex conversation owned by this terminal.");
         }
         active.discovered = true;
+        const attempt = resumeAttempts.get(terminal);
+        if (attempt && !attempt.verified && attempt.sessionId === owner.sessionId) {
+          attempt.verified = true;
+          output.appendLine(`Verified running Codex session ${owner.sessionId} in ${cwd}.`);
+        }
       } catch {
         if (active?.discovered) { active.sessionId = undefined; clearPendingGoal(terminal); }
       }
@@ -387,7 +399,7 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
   const seen = new Set<string>();
   for (const [terminal, active] of activeExecutions) {
     if (active.tool !== request.tool) continue;
-    const identity = active.sessionId ?? (process.platform === "win32" ? path.normalize(active.cwd).toLowerCase() : path.normalize(active.cwd));
+    const identity = active.sessionId ?? `terminal:${active.terminalProcessId ?? vscode.window.terminals.indexOf(terminal)}`;
     const key = `${active.tool}:${identity}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -493,6 +505,7 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
   }
   terminal.show(false);
   const invocation = resumeInvocation(session.tool, session.sessionId);
+  resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now() });
   if (terminal.shellIntegration) {
     terminal.shellIntegration.executeCommand(invocation.executable, invocation.args);
     return;
@@ -532,7 +545,7 @@ async function resumeSession(session: CapturedSession): Promise<void> {
     }
   }
   try { await executeResume(terminal, session); }
-  catch (error) { cleanupLaunches.delete(terminal); clearDialogCleaner(terminal); clearPendingGoal(terminal); throw error; }
+  catch (error) { resumeAttempts.delete(terminal); cleanupLaunches.delete(terminal); clearDialogCleaner(terminal); clearPendingGoal(terminal); throw error; }
 }
 
 async function resumeResponse(
@@ -555,7 +568,7 @@ async function resumeResponse(
   for (const session of response.sessions) {
     try {
       await resumeSession(session);
-      output.appendLine(`Resumed ${session.tool} in ${session.cwd}.`);
+      output.appendLine(`Sent ${session.tool} resume command in ${session.cwd}; startup is not yet verified.`);
     } catch (error) {
       output.appendLine(`Failed to resume ${session.tool} in ${session.cwd}: ${String(error)}`);
       void vscode.window.showWarningMessage(
@@ -603,6 +616,8 @@ export function activate(context: vscode.ExtensionContext): void {
   stopped = false;
   discoveryScript = path.join(context.extensionPath, "dist", "discover-sessions.ps1");
   output = vscode.window.createOutputChannel("AI Account Switcher Resume");
+  const appendLine = output.appendLine.bind(output);
+  output.appendLine = (line: string) => appendLine(`${new Date().toISOString()} ${line}`);
   context.subscriptions.push(output);
 
   if (vscode.env.remoteName) {
@@ -640,6 +655,8 @@ export function activate(context: vscode.ExtensionContext): void {
       terminalExecutions.set(event.terminal, event.execution);
       const tool = classifyCommand(event.execution.commandLine.value);
       if (!tool) return;
+      const attempt = resumeAttempts.get(event.terminal);
+      if (attempt && !attempt.execution) attempt.execution = event.execution;
       const cwd = event.shellIntegration.cwd?.fsPath ?? workspaceFolders()[0];
       if (!cwd) {
         output.appendLine(`Ignored ${tool} terminal because its working directory is unknown.`);
@@ -680,6 +697,14 @@ export function activate(context: vscode.ExtensionContext): void {
       queueHeartbeat();
     }),
     vscode.window.onDidEndTerminalShellExecution((event) => {
+      const attempt = resumeAttempts.get(event.terminal);
+      if (attempt?.execution === event.execution) {
+        resumeAttempts.delete(event.terminal);
+        output.appendLine(`Resumed terminal command exited with code ${event.exitCode ?? "unknown"} after ${Math.round((Date.now() - attempt.startedAt) / 1000)} seconds.`);
+        if (event.exitCode !== 0 && Date.now() - attempt.startedAt < 15000) {
+          void vscode.window.showWarningMessage("AI Account Switcher: the resumed command exited during startup. Inspect the terminal error before retrying.");
+        }
+      }
       if (terminalExecutions.get(event.terminal) === event.execution) terminalExecutions.delete(event.terminal);
       const active = activeExecutions.get(event.terminal);
       if (active?.execution === event.execution) {
@@ -691,6 +716,7 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
+      resumeAttempts.delete(terminal);
       retryPending.delete(terminal);
       cleanupLaunches.delete(terminal);
       clearDialogCleaner(terminal);
@@ -726,6 +752,7 @@ export async function deactivate(): Promise<void> {
   cancelRetries();
   if (retryTimer) clearInterval(retryTimer);
   cleanupLaunches.clear();
+  resumeAttempts.clear();
   for (const terminal of dialogCleaners.keys()) clearDialogCleaner(terminal);
   if (discoveryTimer) clearInterval(discoveryTimer);
   await discovering;

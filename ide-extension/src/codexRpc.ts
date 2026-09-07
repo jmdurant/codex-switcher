@@ -91,17 +91,22 @@ export class CodexReader {
       this.child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
     });
   }
-  private async readThread(threadId: string, cwd: string): Promise<any> {
+  private async readThread(threadId: string, cwd?: string): Promise<any> {
     if (!SESSION_ID.test(threadId)) throw new Error("Invalid Codex session ID.");
     await this.connect();
     const { thread } = await this.request("thread/read", { threadId, includeTurns: false });
     const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
-    if (!thread || thread.id !== threadId || typeof thread.cwd !== "string" || normalize(thread.cwd) !== normalize(cwd)) throw new Error("Codex session does not match the terminal workspace.");
+    if (!thread || thread.id !== threadId || typeof thread.cwd !== "string" || !path.isAbsolute(thread.cwd) || (cwd !== undefined && normalize(thread.cwd) !== normalize(cwd))) throw new Error("Codex session does not match the terminal workspace.");
     return thread;
   }
   async isInteractiveSession(threadId: string, cwd: string): Promise<boolean> {
     const thread = await this.readThread(threadId, cwd);
     return thread.source === "cli" && thread.parentThreadId === null;
+  }
+  /** Only use after native process ancestry has tied this ID to a terminal. */
+  async interactiveSession(threadId: string): Promise<{ cwd: string } | null> {
+    const thread = await this.readThread(threadId);
+    return thread.source === "cli" && thread.parentThreadId === null ? { cwd: thread.cwd } : null;
   }
   async latestTurn(threadId: string, cwd: string): Promise<import("./capacityRetry.ts").RetryTurn | null> {
     await this.readThread(threadId, cwd);

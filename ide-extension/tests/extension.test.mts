@@ -15,7 +15,7 @@ const compiled = await build({
   platform: "node", format: "cjs", external: ["vscode"],
   plugins: [{ name: "mock-codex-reader", setup(builder) {
     builder.onResolve({ filter: /codexRpc$/ }, () => ({ path: "reader", namespace: "test" }));
-    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async isInteractiveSession() { return true; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
+    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async interactiveSession() { return { cwd: globalThis.testSessionCwd }; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
     builder.onResolve({ filter: /sessionDiscovery$/ }, () => ({ path: "discovery", namespace: "discovery-test" }));
     builder.onLoad({ filter: /.*/, namespace: "discovery-test" }, () => ({ contents: `
       export { ownerForTerminal } from ${JSON.stringify(path.resolve("src/sessionDiscovery.ts"))};
@@ -114,7 +114,7 @@ async function scenario(options: {
   beforeLaunch?: Record<string, unknown>; atReady?: Record<string, unknown>;
   expectContinuation?: boolean;
   autoDiscover?: boolean; recovered?: boolean;
-  ambiguous?: boolean;
+  ambiguous?: boolean; missingShellCwd?: boolean; goalUnavailable?: boolean; twoUnknown?: boolean; staleShellCwd?: boolean; exitStartup?: boolean;
   clearAtReady?: boolean; clearAfterPrompt?: boolean; expectCleanup?: boolean;
 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "switcher-extension-test-"));
@@ -141,6 +141,9 @@ async function scenario(options: {
       events.start({ terminal, execution: resumed, shellIntegration: terminal.shellIntegration });
     } },
   };
+  if (options.staleShellCwd) terminal.shellIntegration.cwd = {fsPath: path.join(root, "stale-directory")};
+  if (options.missingShellCwd) terminal.shellIntegration.cwd = undefined;
+  const secondTerminal = { ...terminal, processId: Promise.resolve(12) };
   const vscode = {
     env: { appName: "VS Code" }, Uri: { file: (value: string) => ({ fsPath: value }) },
     commands: { registerCommand() { return disposable; } },
@@ -148,7 +151,7 @@ async function scenario(options: {
       getConfiguration: () => ({ get: (key: string) => key === "enabled" || key === "cleanupStaleGoalDialogs" || (key === "continueInterruptedGoals" && continuationEnabled) }),
       onDidChangeConfiguration: (fn: any) => { events.config = fn; return disposable; },
     },
-    window: { terminals: [terminal], activeTerminal: terminal,
+    window: { terminals: options.twoUnknown ? [terminal, secondTerminal] : [terminal], activeTerminal: terminal,
       createOutputChannel: () => ({ appendLine: (s: string) => messages.push(s), dispose() {} }),
       onDidStartTerminalShellExecution: (fn: any) => { events.start = fn; return disposable; },
       onDidEndTerminalShellExecution: (fn: any) => { events.end = fn; return disposable; },
@@ -164,13 +167,15 @@ async function scenario(options: {
     setTimeout, clearTimeout,
     setInterval: (fn: () => void, ms: number) => { intervals.set(ms, fn); return ms; },
     clearInterval: (ms: number) => intervals.delete(ms),
-    readTestGoal: (threadId: string) => goalCleared ? null : ({ threadId, objective: "Finish existing task", status, tokenBudget: 10000, tokensUsed: 100, createdAt: 1, ...goalChanges }),
+    testSessionCwd: root,
+    readTestGoal: (threadId: string) => { if (options.goalUnavailable) throw new Error("goal API unavailable"); return goalCleared ? null : ({ threadId, objective: "Finish existing task", status, tokenBudget: 10000, tokensUsed: 100, createdAt: 1, ...goalChanges }); },
     getTestOwners: () => owners,
   });
   try {
     module.exports.activate({ subscriptions: [], extensionPath: root });
-    const original = execution(options.autoDiscover ? "codex" : `codex resume ${id}`);
+    const original = execution((options.autoDiscover || options.twoUnknown) ? "codex" : `codex resume ${id}`);
     if (!options.recovered) events.start({ terminal, execution: original, shellIntegration: terminal.shellIntegration });
+    if (options.twoUnknown) events.start({ terminal: secondTerminal, execution: execution("codex"), shellIntegration: terminal.shellIntegration });
     if (options.autoDiscover && !options.ambiguous) await until(() => messages.some(s => s.includes("Automatically identified")));
     const bridge = path.join(root, ".codex-switcher", "ide-bridge");
     const requestPath = path.join(bridge, "requests", `${requestId}.json`);
@@ -182,6 +187,7 @@ async function scenario(options: {
     await until(async () => (await fs.readdir(responsesDir).catch(() => [])).some(name => name.endsWith(".json")));
     const responseFile = (await fs.readdir(responsesDir)).find(name => name.endsWith(".json"))!;
     const response = JSON.parse(await fs.readFile(path.join(responsesDir, responseFile), "utf8"));
+    if (options.twoUnknown) { assert.equal(response.sessions.length, 2); return; }
     if (options.ambiguous) {
       assert.equal(response.sessions[0].sessionId, undefined);
       assert.equal(response.sessions[0].goal, undefined);
@@ -190,6 +196,8 @@ async function scenario(options: {
     }
     assert.equal(response.sessions[0].sessionId, id);
     assert.equal(JSON.stringify(response).includes("Finish existing task"), false, "bridge must not persist the goal objective");
+    assert.equal(response.sessions[0].cwd, root);
+    if (options.staleShellCwd) terminal.shellIntegration.cwd = {fsPath:root};
     events.end({ terminal, execution: original });
     owners = [];
     goalChanges = options.beforeLaunch ?? {};
@@ -202,6 +210,13 @@ async function scenario(options: {
     } else {
       await until(() => launches.length === 1);
       assert.deepEqual(launches[0], ["codex", "resume", id]);
+      if (options.exitStartup) {
+        events.end({terminal,execution:resumed,exitCode:1});
+        assert.ok(messages.some(s => s.includes("exited with code 1")));
+        assert.ok(messages.some(s => s.includes("exited during startup")));
+        assert.ok(!messages.some(s => s.includes("Verified running")));
+        return;
+      }
       status = "paused";
       goalChanges = { ...goalChanges, ...options.atReady };
       goalCleared = options.clearAtReady ?? false;
@@ -259,3 +274,10 @@ test("cleared captured goal dismisses its startup dialog without a resume comman
 test("completed captured goal dismisses its startup dialog", () => scenario({readyText:fullDialog,atReady:{status:"complete"},expectCleanup:true}));
 test("a paused goal cleared after its dialog appears is cleaned up on the next check", () => scenario({capturedStatus:"paused",readyText:fullDialog,clearAfterPrompt:true,expectCleanup:true}));
 test("a still-valid paused goal keeps its startup dialog", () => scenario({capturedStatus:"paused",readyText:fullDialog,expectContinuation:false}));
+
+test("recovered terminals without shell cwd use their process-owned session directory", () => scenario({autoDiscover:true,recovered:true,missingShellCwd:true}));
+test("goal API failure does not prevent capturing and reopening a recovered conversation", () => scenario({autoDiscover:true,recovered:true,goalUnavailable:true,expectContinuation:false}));
+test("two unlinked terminals sharing a directory are captured separately", () => scenario({twoUnknown:true}));
+
+test("recovered terminals use session cwd when shell cwd is stale", () => scenario({autoDiscover:true,recovered:true,staleShellCwd:true}));
+test("a resumed command exiting during startup is reported as failure", () => scenario({exitStartup:true}));
