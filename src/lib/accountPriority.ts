@@ -26,7 +26,8 @@ function full(value: number | null | undefined): boolean {
 
 export function isUsageExhausted(usage: UsageInfo | undefined): boolean {
   if (!usage || usage.error) return false;
-  return usage.has_credits === false || full(usage.primary_used_percent) || full(usage.secondary_used_percent);
+  // Purchased credits are separate from included plan quota.
+  return full(usage.primary_used_percent) || full(usage.secondary_used_percent);
 }
 
 function remaining(usage: UsageInfo | undefined): number {
@@ -34,7 +35,7 @@ function remaining(usage: UsageInfo | undefined): number {
   const values = [usage.primary_used_percent, usage.secondary_used_percent]
     .filter((value): value is number => typeof value === "number")
     .map((value) => 100 - value);
-  return values.length ? Math.max(...values) : -1;
+  return values.length ? Math.min(...values) : -1;
 }
 
 const CLASS_PRIORITY: Record<AccountClass, number> = {

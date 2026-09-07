@@ -2,7 +2,7 @@
   "name": "ai-account-switcher-resume",
   "displayName": "AI Account Switcher Resume",
   "description": "Resumes Codex and agy integrated-terminal sessions after AI Account Switcher changes profiles.",
-  "version": "0.1.0",
+  "version": "0.2.4",
   "publisher": "jmdurant",
   "private": true,
   "engines": {
@@ -19,13 +19,38 @@
     "configuration": {
       "title": "AI Account Switcher Resume",
       "properties": {
+        "aiAccountSwitcherResume.capacityRetry": {
+          "type": "string",
+          "enum": ["off", "ask", "automatic"],
+          "default": "ask",
+          "scope": "window",
+          "description": "Retry confirmed model-capacity failures. Automatic sends continue only to observed background Codex terminals with a fresh empty prompt and an eligible goal (or no goal). Other sessions offer Copy continue. Five automatic attempts per hour per session; never spends resets or switches accounts."
+        },
+        "aiAccountSwitcherResume.cleanupStaleGoalDialogs": {
+          "type": "boolean",
+          "default": true,
+          "scope": "window",
+          "description": "Dismiss an observed goal-resume dialog in a session resumed by this extension when fresh checks confirm its goal was cleared or the same goal completed. Valid paused goals and other prompts are left alone."
+        },
         "aiAccountSwitcherResume.enabled": {
           "type": "boolean",
           "default": true,
           "description": "Capture and resume Codex and agy commands when AI Account Switcher changes profiles."
+        },
+        "aiAccountSwitcherResume.continueInterruptedGoals": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "After a profile switch, continue an exact linked Codex session only if its goal was active or usage-limited before capture. Never changes goal budgets. Requires a CLI with goal support; unknown sessions must be linked using the command palette."
         }
       }
-    }
+    },
+    "commands": [
+      {
+        "command": "aiAccountSwitcherResume.linkCodexSession",
+        "title": "AI Account Switcher: Link Codex Session"
+      }
+    ]
   },
   "scripts": {
     "build": "node esbuild.mjs",

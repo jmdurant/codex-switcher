@@ -25,12 +25,23 @@ export function classifyCommand(commandLine: string): ResumeTool | undefined {
   return undefined;
 }
 
-export function resumeInvocation(tool: ResumeTool): ResumeInvocation {
+const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+export function sessionIdFromCommand(commandLine: string): string | undefined {
+  if (classifyCommand(commandLine) !== "codex") return undefined;
+  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  if (tokens.some(token => token === "--remote" || token.startsWith("--remote="))) return undefined;
+  if (tokens[1] !== "resume") return undefined;
+  const id = tokens[2]?.replace(/^['"]|['"]$/g, "");
+  return id && UUID.test(id) ? id.toLowerCase() : undefined;
+}
+
+export function resumeInvocation(tool: ResumeTool, sessionId?: string): ResumeInvocation {
+  if (sessionId !== undefined && !UUID.test(sessionId)) throw new Error("Invalid Codex session ID.");
   return tool === "codex"
     ? {
         executable: "codex",
-        args: ["resume", "--last"],
-        commandLine: "codex resume --last",
+        args: ["resume", sessionId ?? "--last"],
+        commandLine: `codex resume ${sessionId ?? "--last"}`,
       }
     : {
         executable: "agy",

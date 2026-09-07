@@ -140,6 +140,11 @@ integration remains unimplemented.
 
 ### IDE Terminal Resume Companion
 
+The companion now supports optional continuation of interrupted Codex goals,
+using an exact linked session and preserving its budget. See
+[Continue interrupted Codex goals](ide-extension/README.md#continue-interrupted-codex-goals)
+for setup and supported terminal states.
+
 The optional companion extension lets a forced account switch return an active
 Codex or `agy` session to its VS Code-compatible integrated terminal. It uses
 terminal shell integration to capture the tool and working directory, then runs
@@ -178,6 +183,50 @@ Optional environment variables:
 The browser dashboard serves the same UI and backend actions through `/api/invoke/*`, which makes it usable over LAN, Tailscale, or a remote host tunnel when you expose the chosen port safely.
 
 ## Usage and Reset Credits
+
+### Quota options
+
+See [Token Utilization Strategy](TOKEN_UTILIZATION_STRATEGY.md) for the full
+selection policy, expiring five-hour quota rules, banked resets, and examples.
+
+Use **Compare options** above the account list to refresh usage and banked resets
+and decide what to do next. Configure automation in **Settings → Quota & switching**;
+the main screen shows a compact status. **Auto-select the best available account** defaults
+to on and checks quota every 30 seconds while the app is open. Explicit saved
+on/off choices are preserved.
+It waits for 0% reported remaining in either limiting window before switching.
+Any verified alternative with positive quota in every reported window is eligible. Both accounts are rechecked before switching. Auto-selection
+may close running Codex sessions and attempt to resume supported IDE sessions.
+It never redeems banked resets. A one-minute cooldown between attempts and a
+five-minute hold on returning to the account just left prevent repeated switches.
+The setting is saved separately from the old automatic-failover preference.
+
+**Use expiring 5-hour quota first** also defaults to on under auto-selection.
+Choose a lead time of 15 minutes, 30 minutes, 1 hour (default), or 2 hours.
+This may switch away from a healthy weekly-only account to use an account whose
+actual five-hour window resets soon. The earliest eligible deadline wins. Both
+usage windows must still have quota; using five-hour quota also consumes weekly
+quota. Once on an expiring window, auto mode stays until either limit reaches
+0% remaining (100% used) or the five-hour window resets.
+A passed reset time requires fresh usage before any decision. Existing cooldowns
+still apply, banked resets stay manual, and no extra work is generated just to
+consume quota. Explicit saved choices are preserved; this preference only operates in auto mode.
+
+
+The comparison uses the windows actually reported for each account, including
+weekly-only plans. Both windows constrain accounts with five-hour and weekly
+limits. Options with more than 10% remaining in every reported window rank ahead
+of low-quota options; among those, quota replenishing within 24 hours is favored.
+Percentages are relative to each account's plan, not estimates of equal amounts
+of work. Purchased-credit balances are separate from included plan quota.
+
+Usage is checked again before a selected switch. Results older than two minutes
+must be refreshed. Running Codex sessions use the existing close confirmation.
+Banked resets are listed in expiry order, with expiries within three days
+highlighted. **Review banked resets** explains how to redeem in Codex for the
+matching account and workspace; the switcher does not redeem them. After using
+one, refresh to read the actual new quota and reset dates. Missing expiry dates
+are unknown, not a guarantee that a reset never expires.
 
 Codex Switcher shows two kinds of account usage information:
 
@@ -325,3 +374,22 @@ pnpm release patch -- --push
 # For non-interactive use, pass the note explicitly.
 pnpm release patch -- --push --note "Fixed account switching issues"
 ```
+
+### Staggered warm-up rotation
+
+With **Settings → Quota & switching → Auto-select** and **Use expiring 5-hour
+quota first** enabled, fresh unused five-hour accounts are automatically warmed
+at least one hour apart. Per-account warm-up toggles are not required. The
+scheduler requires positive weekly quota and fresh reported window data, saves
+its attempt schedule across restarts, and avoids duplicate auto/timed warm-ups.
+Existing running windows keep their reset times; explicit manual warm-up can
+change the intended spacing.
+
+The rotation prefers **Non-Pro 1 → Pro → Non-Pro 2 → Pro**, using each due
+short-window account down to 0%. It skips the Pro stop when another short-window
+account is already due. "Pro" here means a usable weekly-only reserve according
+to reported quota windows. Banked resets stay manual.
+
+First-contact activation is the working assumption, not yet a controlled live
+verification. See [the full strategy](TOKEN_UTILIZATION_STRATEGY.md#preserve-pro-quota-with-staggered-five-hour-rotation)
+for scheduling, continuity limits, and validation.

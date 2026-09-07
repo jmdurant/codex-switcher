@@ -1,4 +1,5 @@
 import * as esbuild from "esbuild";
+import { copyFile } from "node:fs/promises";
 
 await esbuild.build({
   entryPoints: ["src/extension.ts"],
@@ -10,3 +11,4 @@ await esbuild.build({
   target: "node20",
   sourcemap: true,
 });
+await copyFile("scripts/discover-sessions.ps1", "dist/discover-sessions.ps1");

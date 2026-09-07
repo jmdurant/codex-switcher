@@ -31,8 +31,8 @@ test("classifies current plan values", () => {
   assert.equal(classifyAccount("quorum"), "quorum");
 });
 
-test("detects exhausted credits or windows", () => {
-  assert.equal(isUsageExhausted(usage({ has_credits: false })), true);
+test("detects exhausted windows without confusing purchased credits with quota", () => {
+  assert.equal(isUsageExhausted(usage({ has_credits: false })), false);
   assert.equal(isUsageExhausted(usage({ primary_used_percent: 100 })), true);
   assert.equal(isUsageExhausted(usage({ primary_used_percent: 50, secondary_used_percent: 50 })), false);
 });

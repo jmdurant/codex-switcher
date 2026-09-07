@@ -45,13 +45,16 @@ import {
   type AutoWarmupWindow,
   type AutoWarmupWindowKind,
 } from "./lib/autoWarmupPolicy";
-import { compareAccountAvailability, isUsageExhausted, selectFallbackAccount } from "./lib/accountPriority";
+import { compareAccountAvailability } from "./lib/accountPriority";
+import { QuotaOptions } from "./components/QuotaOptions";
+import { QuotaSettings } from "./components/QuotaSettings";
+import { STAGGER_STORAGE_KEY, hasFiveHourWindow, readStaggerLedger, selectStaggerWarmup, canStaggerWarm, reserveStaggerWarmup } from "./lib/staggeredWarmup";
+import { useAutoQuotaSwitch } from "./hooks/useAutoQuotaSwitch";
+import { normalizeAutoQuotaPolicy } from "./lib/quotaOptions";
 import "./App.css";
 
 const AUTO_WARMUP_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WARMUP_RETRY_BACKOFF_MS = 60 * 1000;
-const AUTO_SWITCH_STORAGE_KEY = "ai-account-switcher.auto-switch-on-exhaustion";
-const AUTO_SWITCH_COOLDOWN_MS = 30 * 1000;
 const LIMIT_FULL_THRESHOLD = 99.5;
 const ACCOUNT_SEARCH_THRESHOLD = 8;
 const SWITCH_ACCOUNT_BLOCKED_EVENT = "switch-account-blocked";
@@ -179,13 +182,20 @@ function App() {
   );
   // Custom interval input (ms), shown when user picks "Custom"
   const [customIntervalMinutes, setCustomIntervalMinutes] = useState("");
-  const [autoSwitchEnabled, setAutoSwitchEnabled] = useState(() => {
-    try { return window.localStorage.getItem(AUTO_SWITCH_STORAGE_KEY) === "true"; } catch { return false; }
+  const switchInFlightRef = useRef(false);
+  const [staggerRunning, setStaggerRunning] = useState(false);
+  const staggerRunningRef = useRef(false);
+  const staggerModeRef = useRef(false);
+  const [quotaSettingsOpen, setQuotaSettingsOpen] = useState(false);
+  const [autoQuotaEnabled, setAutoQuotaEnabled] = useState(() => {
+    try { const stored = localStorage.getItem("ai-account-switcher.auto-quota-selection-v2"); return stored === null || stored === "true"; }
+    catch { return false; }
   });
-  const autoSwitchInFlightRef = useRef(false);
-  const autoSwitchHandledRef = useRef(new Map<string, string>());
-  const autoSwitchLastAtRef = useRef(0);
-
+  const [autoQuotaPolicy, setAutoQuotaPolicy] = useState(() => {
+    try { return normalizeAutoQuotaPolicy(JSON.parse(localStorage.getItem("ai-account-switcher.auto-quota-policy") ?? "null")); }
+    catch { return normalizeAutoQuotaPolicy(null); }
+  });
+  staggerModeRef.current = autoQuotaEnabled && autoQuotaPolicy.useExpiringFiveHourQuota;
   // Auto warm-up minimum interval between successive warm-ups per account.
   const [autoWarmupIntervalMs, setAutoWarmupIntervalMs] = useState(
     () => readAutoWarmupIntervalMs()
@@ -600,69 +610,48 @@ function App() {
   }, []);
 
   const handleSwitch = async (accountId: string, force = false) => {
-    const ideResume = force ? await prepareIdeResume("codex") : null;
-
-    // If force=true the user already confirmed the dialog in AccountCard.
-    // We still need to kill Codex processes before switching.
-    if (force) {
-      const killed = await forceCloseCodexProcesses();
-      if (!killed?.can_switch) {
-        await completeIdeResume(ideResume, false);
-        showWarmupToast("Could not close Codex processes. Switch aborted.", true);
-        return;
-      }
-    } else {
-      // Check processes before switching (non-force path)
-      const latestProcessInfo = await checkProcesses();
-      if (latestProcessInfo && !latestProcessInfo.can_switch) {
-        return;
-      }
-    }
-
+    if (switchInFlightRef.current) return false;
+    switchInFlightRef.current = true;
+    setSwitchingId(accountId);
+    let ideResume: Awaited<ReturnType<typeof prepareIdeResume>> = null;
+    let switched = false;
     try {
-      setSwitchingId(accountId);
+      if (force) {
+        ideResume = await prepareIdeResume("codex");
+        const killed = await forceCloseCodexProcesses();
+        if (!killed?.can_switch) {
+          showWarmupToast("Could not close Codex processes. Switch aborted.", true);
+          return false;
+        }
+      } else {
+        const latestProcessInfo = await checkProcesses();
+        if (!latestProcessInfo) {
+          showWarmupToast("Could not check running Codex sessions. Try again.", true);
+          return false;
+        }
+        if (!latestProcessInfo.can_switch) {
+          setPendingTraySwitchAccountId(accountId);
+          setForceCloseConfirmOpen(true);
+          return false;
+        }
+      }
       await switchAccount(accountId, force);
+      switched = true;
     } catch (err) {
       console.error("Failed to switch account:", err);
       showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
     } finally {
-      if (force) {
-        const completion = await completeIdeResume(ideResume, true);
+      if (ideResume) {
+        const completion = await completeIdeResume(ideResume, switched);
         if (completion && completion.resumedSessions > 0) {
-          showWarmupToast(
-            `Resuming ${completion.resumedSessions} IDE terminal session${
-              completion.resumedSessions === 1 ? "" : "s"
-            }.`
-          );
+          showWarmupToast(`Resuming ${completion.resumedSessions} IDE terminal session${completion.resumedSessions === 1 ? "" : "s"}.`);
         }
       }
       setSwitchingId(null);
+      switchInFlightRef.current = false;
     }
+    return switched;
   };
-
-  // Automatically fail over only when explicitly enabled and Codex is running.
-  // Usage data is the source of truth; the IDE bridge is reused solely for resume.
-  useEffect(() => {
-    if (!autoSwitchEnabled || autoSwitchInFlightRef.current) return;
-    const active = accounts.find((account) => account.is_active);
-    if (!active?.usage || active.usageLoading || !isUsageExhausted(active.usage)) return;
-    if (!processInfo || processInfo.can_switch) return;
-
-    const eventKey = `${active.id}:${active.usage.primary_resets_at ?? ""}:${active.usage.secondary_resets_at ?? ""}`;
-    if (autoSwitchHandledRef.current.get(active.id) === eventKey) return;
-    if (Date.now() - autoSwitchLastAtRef.current < AUTO_SWITCH_COOLDOWN_MS) return;
-
-    const fallback = selectFallbackAccount(accounts, active.id);
-    if (!fallback) return;
-
-    autoSwitchHandledRef.current.set(active.id, eventKey);
-    autoSwitchLastAtRef.current = Date.now();
-    autoSwitchInFlightRef.current = true;
-    showWarmupToast(`Quota exhausted on ${active.name}; switching to ${fallback.name}.`);
-    void handleSwitch(fallback.id, true).finally(() => {
-      autoSwitchInFlightRef.current = false;
-    });
-  }, [accounts, autoSwitchEnabled, handleSwitch, processInfo]);
 
   const handleDelete = async (accountId: string) => {
     if (deleteConfirmId !== accountId) {
@@ -791,6 +780,21 @@ function App() {
     formatError: formatWarmupError,
   });
 
+  const autoQuota = useAutoQuotaSwitch({
+    enabled: autoQuotaEnabled,
+    policy: autoQuotaPolicy,
+    busy: switchingId !== null || isForceClosingCodex || forceCloseConfirmOpen || loading || staggerRunning,
+    accounts,
+    onSwitch: async (accountId, cancelled) => {
+      const processes = await checkProcesses();
+      if (!processes || cancelled()) return false;
+      const switched = await handleSwitch(accountId, !processes.can_switch);
+      if (switched) showWarmupToast("Auto-selected the best available account based on fresh quota.");
+      return switched;
+    },
+    onError: (message) => showWarmupToast(`Auto-selection failed: ${message}`, true),
+  });
+
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     let unlistenAutoWarmup: (() => void) | undefined;
@@ -879,41 +883,19 @@ function App() {
     [closeBehaviorDontAskAgain, formatWarmupError, showWarmupToast]
   );
 
-  const handleForceCloseConfirm = useCallback(async () => {
+  const handleForceCloseConfirm = async () => {
     const accountId = pendingTraySwitchAccountId;
-    const latestProcessInfo = await forceCloseCodexProcesses();
-
     if (!accountId) {
+      await forceCloseCodexProcesses();
       return;
     }
-
-    if (!latestProcessInfo?.can_switch) {
-      setPendingTraySwitchAccountId(null);
-      return;
-    }
-
     try {
-      setSwitchingId(accountId);
-      await switchAccount(accountId, true);
-      setPendingTraySwitchAccountId(null);
-      showWarmupToast("Switched account after force closing Codex.");
-    } catch (err) {
-      console.error("Failed to switch account after force close:", err);
-      setPendingTraySwitchAccountId(null);
-      showWarmupToast(
-        `Switch failed after force close: ${formatWarmupError(err)}`,
-        true
-      );
+      const switched = await handleSwitch(accountId, true);
+      if (switched) showWarmupToast("Switched account after force closing Codex.");
     } finally {
-      setSwitchingId(null);
+      setPendingTraySwitchAccountId(null);
     }
-  }, [
-    forceCloseCodexProcesses,
-    formatWarmupError,
-    pendingTraySwitchAccountId,
-    showWarmupToast,
-    switchAccount,
-  ]);
+  };
 
   const handleWarmupAccount = async (accountId: string, accountName: string) => {
     try {
@@ -1012,6 +994,7 @@ function App() {
       isRunning: boolean
     ) => {
       if (isRunning) return "Warming...";
+      if (staggerModeRef.current && (usage?.primary_window_minutes === 300 || usage?.secondary_window_minutes === 300)) return "Rotation managed";
       if (!isEnabled) return "off";
       if (!usage || usage.error) return "on";
 
@@ -1047,8 +1030,8 @@ function App() {
   );
 
   const timedWarmupTargetCount = useMemo(
-    () => getTimedWarmupTargets(accounts).length,
-    [accounts]
+    () => getTimedWarmupTargets(accounts).filter(a => !(autoQuotaEnabled && autoQuotaPolicy.useExpiringFiveHourQuota && hasFiveHourWindow(a))).length,
+    [accounts, autoQuotaEnabled, autoQuotaPolicy.useExpiringFiveHourQuota]
   );
 
   const backOffAutoWarmupRetry = useCallback((accountId: string) => {
@@ -1070,6 +1053,7 @@ function App() {
           return;
         }
 
+        if (staggerModeRef.current && hasFiveHourWindow({usage:freshUsage} as AccountWithUsage)) return;
         const window = getDueAutoWarmupForAccount(accountId, freshUsage);
         if (!window) return;
 
@@ -1108,6 +1092,7 @@ function App() {
 
     const checkAutoWarmup = () => {
       for (const account of accountsRef.current) {
+        if (staggerModeRef.current && hasFiveHourWindow(account)) continue;
         const autoEnabled =
           autoWarmupAllEnabled || autoWarmupAccountIdsRef.current.has(account.id);
         if (!autoEnabled || autoWarmupRunningIdsRef.current.has(account.id)) continue;
@@ -1135,8 +1120,42 @@ function App() {
     runAutoWarmupForAccount,
   ]);
 
+  useEffect(() => {
+    if (!autoQuotaEnabled || !autoQuotaPolicy.useExpiringFiveHourQuota) return;
+    let cancelled = false;
+    const tick = async () => {
+      if (cancelled || staggerRunningRef.current || switchInFlightRef.current || loading || !navigator.locks) return;
+      staggerRunningRef.current = true;
+      try {
+        await navigator.locks.request(STAGGER_STORAGE_KEY, {ifAvailable:true}, async lock => {
+          if (!lock || cancelled || !staggerModeRef.current || switchInFlightRef.current) return;
+          const ledger = readStaggerLedger(localStorage.getItem(STAGGER_STORAGE_KEY));
+          const target = selectStaggerWarmup(accountsRef.current, ledger, Date.now());
+          if (!target || autoWarmupRunningIdsRef.current.size > 0 || timedWarmupRunningRef.current) return;
+          setStaggerRunning(true);
+          const usage = await refreshSingleUsage(target.id);
+          const current = accountsRef.current.find(a => a.id === target.id);
+          if (!current || cancelled || !staggerModeRef.current || switchInFlightRef.current ||
+              !canStaggerWarm({...current,usage,usageLoading:false},ledger,Date.now())) return;
+          // Claim before contact: a failed or interrupted request still occupies
+          // its slot, preventing bursts and duplicate warm-ups after restart.
+          localStorage.setItem(STAGGER_STORAGE_KEY, JSON.stringify(reserveStaggerWarmup(ledger,target.id,Date.now())));
+          await warmupAccount(target.id);
+          markSuccessfulWarmup(target.id,Date.now());
+          await refreshSingleUsage(target.id);
+          showWarmupToast("Prepared one five-hour account. Next warm-up is at least one hour away.");
+        });
+      } catch (error) {
+        showWarmupToast(`Staggered warm-up could not complete: ${formatWarmupError(error)}`,true);
+      } finally { staggerRunningRef.current = false; setStaggerRunning(false); }
+    };
+    void tick();
+    const timer = window.setInterval(() => void tick(),30000);
+    return () => {cancelled=true; window.clearInterval(timer);};
+  }, [autoQuotaEnabled,autoQuotaPolicy.useExpiringFiveHourQuota,loading,refreshSingleUsage,warmupAccount,markSuccessfulWarmup,showWarmupToast,formatWarmupError]);
+
   const runTimedWarmup = useCallback(async () => {
-    const targets = getTimedWarmupTargets(accountsRef.current);
+    const targets = getTimedWarmupTargets(accountsRef.current).filter(a => !staggerModeRef.current || !hasFiveHourWindow(a));
     if (targets.length === 0) return;
 
     setTimedWarmupRunning(true);
@@ -1145,6 +1164,7 @@ function App() {
       let warmed = 0;
       let failed = 0;
       for (const account of targets) {
+        if (staggerModeRef.current && hasFiveHourWindow(account)) continue;
         try {
           await warmupAccount(account.id);
           markSuccessfulWarmup(account.id, warmedAt);
@@ -1823,6 +1843,11 @@ function App() {
                       {isImportingFull ? "Importing..." : "Import Full Encrypted File"}
                     </button>
 
+                    <button
+                      onClick={() => { setIsActionsMenuOpen(false); setQuotaSettingsOpen(true); }}
+                      className="w-full rounded-lg px-3 py-2 text-left text-sm transition-colors hover:bg-gray-100 dark:text-white dark:hover:bg-neutral-900"
+                    >Quota &amp; switching</button>
+
                     {/* Settings toggles — Tauri only */}
                     {isTauriRuntime() && (
                       <>
@@ -1872,24 +1897,7 @@ function App() {
                     {/* Usage refresh interval — always shown */}
                     <div className="my-1 border-t border-gray-200 dark:border-neutral-800" />
                     <div className="px-3 py-2">
-                      <label className="mb-2 flex items-center justify-between text-sm font-medium text-gray-800 dark:text-gray-100">
-                        <span>
-                          <span>Auto-switch on exhausted quota</span>
-                          <span className="mt-0.5 block text-[11px] font-normal text-gray-400 dark:text-gray-500">
-                            Uses 10x Team → Team → Quorum, then resumes Codex.
-                          </span>
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={autoSwitchEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setAutoSwitchEnabled(enabled);
-                            try { window.localStorage.setItem(AUTO_SWITCH_STORAGE_KEY, String(enabled)); } catch {}
-                          }}
-                          className="ml-3 h-4 w-4 accent-gray-900 dark:accent-gray-100"
-                        />
-                      </label>
+
                       <div className="mb-0.5 text-xs font-medium text-gray-700 dark:text-gray-200">
                         Usage bar refresh interval
                       </div>
@@ -2037,6 +2045,39 @@ function App() {
             await loadAccounts(true);
             // Capture has succeeded; usage failures belong on this account's card.
             await refreshSingleUsage(account.id).catch(() => {});
+          }}
+        />
+        <QuotaSettings
+          open={quotaSettingsOpen}
+          onClose={() => setQuotaSettingsOpen(false)}
+          autoEnabled={autoQuotaEnabled}
+          autoPolicy={autoQuotaPolicy}
+          onAutoPolicyChange={(policy) => {
+            const normalized = normalizeAutoQuotaPolicy(policy);
+            setAutoQuotaPolicy(normalized);
+            try { localStorage.setItem("ai-account-switcher.auto-quota-policy", JSON.stringify(normalized)); } catch {}
+          }}
+          onAutoEnabledChange={(enabled) => {
+            setAutoQuotaEnabled(enabled);
+            try { localStorage.setItem("ai-account-switcher.auto-quota-selection-v2", String(enabled)); } catch {}
+          }}
+        />
+        <QuotaOptions
+          accounts={accounts}
+          maskedAccountIds={maskedAccounts}
+          busy={switchingId !== null || isForceClosingCodex || forceCloseConfirmOpen || autoQuota.switching}
+          autoEnabled={autoQuotaEnabled}
+          autoPolicy={autoQuotaPolicy}
+          autoStatus={autoQuota.status}
+          onSwitch={async (accountId) => {
+            const latest = await checkProcesses();
+            if (!latest) throw new Error("Could not check running Codex sessions. Try again.");
+            if (!latest.can_switch) {
+              setPendingTraySwitchAccountId(accountId);
+              setForceCloseConfirmOpen(true);
+              return;
+            }
+            await handleSwitch(accountId);
           }}
         />
         {loading && accounts.length === 0 ? (
