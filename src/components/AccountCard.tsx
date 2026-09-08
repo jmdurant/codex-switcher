@@ -121,6 +121,7 @@ export function AccountCard({
   const [isEditing, setIsEditing] = useState(false);
   const [editName, setEditName] = useState(account.name);
   const [resetCredits, setResetCredits] = useState<AccountResetCredits | null>(null);
+  const [resetCreditsStale, setResetCreditsStale] = useState(false);
   const [confirmRunningSwitch, setConfirmRunningSwitch] = useState(false);
   const [statsOpen, setStatsOpen] = useState<boolean>(() => {
     if (typeof window === "undefined") return account.is_active;
@@ -234,22 +235,36 @@ export function AccountCard({
         accountId: account.id,
       });
       if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(stats.account_id === account.id ? stats.reset_credits : null);
+      if (stats.account_id !== account.id) return;
+      if (stats.reset_credits !== null) {
+        setResetCredits(stats.reset_credits);
+        setResetCreditsStale(false);
+      } else {
+        setResetCreditsStale(true);
+      }
     } catch {
       if (requestId !== resetRequestSeq.current) return;
-      setResetCredits(null);
+      setResetCreditsStale(true);
     }
   }, [account.auth_mode, account.id]);
 
   const handleStatsLoaded = useCallback(
     (stats: AccountUsageStatsInfo | null) => {
-      setResetCredits(stats?.account_id === account.id ? stats.reset_credits : null);
+      // A loading notification or failed stats request is not zero resets.
+      if (!stats || stats.account_id !== account.id) return;
+      if (stats.reset_credits !== null) {
+        setResetCredits(stats.reset_credits);
+        setResetCreditsStale(false);
+      } else {
+        setResetCreditsStale(true);
+      }
     },
     [account.id]
   );
 
   useEffect(() => {
     setResetCredits(null);
+    setResetCreditsStale(false);
 
     void loadResetCredits();
     const timer = window.setInterval(() => {
@@ -350,6 +365,7 @@ export function AccountCard({
           <ResetCreditsMenu
             compact={compactResetCredits}
             resetCredits={resetCredits}
+            stale={resetCreditsStale}
           />
         </div>
       </div>

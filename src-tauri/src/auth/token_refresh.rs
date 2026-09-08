@@ -3,7 +3,10 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use chrono::Utc;
-use tokio::time::{sleep, Duration};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
 
 use super::{
     load_accounts, read_current_auth, save_accounts, switch_to_account, sync_active_account_tokens,
@@ -16,6 +19,49 @@ use crate::types::{
 const DEFAULT_ISSUER: &str = "https://auth.openai.com";
 const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const EXPIRY_SKEW_SECONDS: i64 = 60;
+
+// Remember only fingerprints, never credentials. A new login/token automatically
+// escapes this process-local cache. Entries are serialized by AUTH_OPERATION_LOCK.
+static REJECTED_REFRESH_TOKENS: LazyLock<Mutex<HashMap<String, Vec<u8>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug)]
+struct InvalidRefreshToken;
+
+impl std::fmt::Display for InvalidRefreshToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "This saved session has ended. Re-login to this account to reconnect it."
+        )
+    }
+}
+
+impl std::error::Error for InvalidRefreshToken {}
+
+fn is_invalid_refresh_response(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return false;
+    };
+    matches!(
+        value.pointer("/error/code").and_then(|v| v.as_str()),
+        Some("refresh_token_invalidated" | "refresh_token_reused" | "refresh_token_expired")
+    )
+}
+
+fn has_new_access_token(previous: &StoredAccount, current: &StoredAccount) -> bool {
+    match (&previous.auth_data, &current.auth_data) {
+        (
+            AuthData::ChatGPT {
+                access_token: old, ..
+            },
+            AuthData::ChatGPT {
+                access_token: new, ..
+            },
+        ) => old != new,
+        _ => false,
+    }
+}
 
 #[derive(Debug, serde::Deserialize)]
 struct RefreshTokenResponse {
@@ -37,10 +83,6 @@ struct TokenRefreshUpdate {
 /// Ensure the account has non-expired ChatGPT OAuth tokens.
 /// Returns an updated account when a refresh was performed.
 pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<StoredAccount> {
-    if !chatgpt_tokens_need_refresh(account) {
-        return Ok(account.clone());
-    }
-
     let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
     ensure_chatgpt_tokens_fresh_locked(account).await
 }
@@ -77,7 +119,7 @@ pub(crate) async fn ensure_chatgpt_tokens_fresh_locked(
     }
 }
 
-/// Force-refresh ChatGPT OAuth tokens for an account.
+/// Recover from a rejected access token, reusing a concurrent refresh first.
 pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAccount> {
     if matches!(account.auth_data, AuthData::ApiKey { .. }) {
         return Ok(account.clone());
@@ -89,6 +131,12 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 
 async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
+
+    // Multiple API calls can fail with the same snapshot. Once another caller
+    // (or Codex) replaces it, retry that replacement rather than rotating again.
+    if has_new_access_token(account, &current) && !chatgpt_tokens_need_refresh(&current) {
+        return Ok(current);
+    }
 
     if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
         println!(
@@ -112,7 +160,23 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
         anyhow::bail!("Missing refresh token for account {}", current.name);
     }
 
-    let refreshed = refresh_tokens_with_refresh_token(&current_refresh_token).await?;
+    let fingerprint = Sha256::digest(current_refresh_token.as_bytes()).to_vec();
+    if REJECTED_REFRESH_TOKENS.lock().unwrap().get(&account.id) == Some(&fingerprint) {
+        return Err(InvalidRefreshToken.into());
+    }
+    let refreshed = match refresh_tokens_with_refresh_token(&current_refresh_token).await {
+        Ok(response) => response,
+        Err(error) => {
+            if error.downcast_ref::<InvalidRefreshToken>().is_some() {
+                REJECTED_REFRESH_TOKENS
+                    .lock()
+                    .unwrap()
+                    .insert(account.id.clone(), fingerprint);
+            }
+            return Err(error);
+        }
+    };
+    REJECTED_REFRESH_TOKENS.lock().unwrap().remove(&account.id);
     let next = merge_refresh_response(
         current_id_token,
         current_refresh_token,
@@ -301,42 +365,23 @@ async fn refresh_tokens_with_refresh_token(refresh_token: &str) -> Result<Refres
         urlencoding::encode(CLIENT_ID),
     );
 
-    let mut last_send_error = None;
-    let mut response = None;
-
-    for attempt in 1..=3u8 {
-        match client
-            .post(format!("{DEFAULT_ISSUER}/oauth/token"))
-            .timeout(Duration::from_secs(10))
-            .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(body.clone())
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                response = Some(resp);
-                break;
-            }
-            Err(err) => {
-                last_send_error = Some(err);
-                if attempt < 3 {
-                    sleep(Duration::from_millis(250 * u64::from(attempt))).await;
-                }
-            }
-        }
-    }
-
-    let response = match response {
-        Some(resp) => resp,
-        None => {
-            let err = last_send_error.context("Failed to send token refresh request")?;
-            return Err(err.into());
-        }
-    };
+    // A timeout does not prove the server failed to consume this single-use
+    // token. Never automatically replay an ambiguous refresh request.
+    let response = client
+        .post(format!("{DEFAULT_ISSUER}/oauth/token"))
+        .timeout(Duration::from_secs(10))
+        .header("Content-Type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .context("Token refresh request failed; its outcome is unknown")?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
+        if is_invalid_refresh_response(&body) {
+            return Err(InvalidRefreshToken.into());
+        }
         anyhow::bail!("Token refresh failed: {status} - {body}");
     }
 
@@ -354,6 +399,60 @@ mod tests {
     };
     use crate::types::{AccountsStore, AuthData, AuthDotJson, StoredAccount, TokenData};
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+
+    #[test]
+    fn only_explicit_terminal_refresh_errors_are_classified_as_ended_sessions() {
+        for code in [
+            "refresh_token_invalidated",
+            "refresh_token_reused",
+            "refresh_token_expired",
+        ] {
+            assert!(super::is_invalid_refresh_response(&format!(
+                r#"{{"error":{{"code":"{code}"}}}}"#
+            )));
+        }
+        for body in [
+            "timeout",
+            "<html>Unauthorized</html>",
+            r#"{"error":{"code":"server_error"}}"#,
+            r#"{"error":{"message":"Unauthorized"}}"#,
+        ] {
+            assert!(!super::is_invalid_refresh_response(body));
+        }
+    }
+
+    #[test]
+    fn replacement_access_token_avoids_duplicate_refresh_but_same_token_does_not() {
+        let now = chrono::Utc::now().timestamp();
+        let original = StoredAccount::new_chatgpt(
+            "Test".into(),
+            None,
+            None,
+            None,
+            jwt_with_exp(now + 3600),
+            jwt_with_exp(now + 3600),
+            "old-refresh".into(),
+            None,
+        );
+        let mut replacement = original.clone();
+        assert!(!super::has_new_access_token(&original, &replacement));
+        if let AuthData::ChatGPT {
+            access_token,
+            refresh_token,
+            ..
+        } = &mut replacement.auth_data
+        {
+            *access_token = jwt_with_exp(now + 7200);
+            *refresh_token = "replacement-refresh".into();
+        }
+        assert!(super::has_new_access_token(&original, &replacement));
+        assert!(!chatgpt_tokens_need_refresh(&replacement));
+        // A genuinely expired replacement must still be refreshed.
+        if let AuthData::ChatGPT { access_token, .. } = &mut replacement.auth_data {
+            *access_token = jwt_with_exp(now - 3600);
+        }
+        assert!(chatgpt_tokens_need_refresh(&replacement));
+    }
 
     fn jwt_with_exp(exp: i64) -> String {
         let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));

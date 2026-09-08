@@ -6,7 +6,7 @@ import * as path from "node:path";
 import * as os from "node:os";
 
 test("Windows npm installs resolve native binaries without spawning the visible shim", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-native-launch-"));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codex-native-launch-")));
   try {
     const script = path.join(root, "bin", "codex.js");
     await fs.mkdir(path.dirname(script), {recursive:true});

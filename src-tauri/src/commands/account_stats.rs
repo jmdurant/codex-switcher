@@ -234,9 +234,9 @@ async fn parse_profile_usage_with_reset_credits(
 ) -> anyhow::Result<AccountUsageStats> {
     let mut stats = parse_profile_usage_response(&account.id, response).await?;
 
-    if stats.available {
-        stats.reset_credits = fetch_reset_credits(account).await.ok();
-    }
+    // Reset credits have their own endpoint and may be available even when
+    // detailed profile statistics are unavailable for this account.
+    stats.reset_credits = fetch_reset_credits(account).await.ok();
 
     Ok(stats)
 }

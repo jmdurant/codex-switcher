@@ -153,7 +153,7 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
 
     let response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
 
-    // 401 means the token is genuinely expired — refresh and retry once.
+    // A 401 can mean expired, replaced, or revoked credentials; reconcile and retry once.
     // 403 is a Cloudflare challenge or permissions error; refreshing the token
     // would burn the refresh token unnecessarily (refresh_token_reused error).
     if response.status() == StatusCode::UNAUTHORIZED {
@@ -221,7 +221,7 @@ async fn warmup_with_chatgpt_auth(account: &StoredAccount) -> Result<()> {
 
     let mut response = send_chatgpt_warmup_request(access_token, chatgpt_account_id, true).await?;
 
-    // Only refresh tokens on 401 (genuinely expired). A 403 is a Cloudflare
+    // Only recover credentials on 401. A 403 is a Cloudflare
     // challenge and does not indicate stale tokens — refreshing on 403 burns
     // the refresh token and causes a refresh_token_reused error on the next call.
     if response.status() == StatusCode::UNAUTHORIZED {

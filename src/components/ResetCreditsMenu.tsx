@@ -49,9 +49,11 @@ function formatExpiryDetail(expiresAt: string | null): string {
 export function ResetCreditsMenu({
   compact,
   resetCredits,
+  stale = false,
 }: {
   compact: boolean;
   resetCredits: AccountResetCredits | null;
+  stale?: boolean;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -114,7 +116,7 @@ export function ResetCreditsMenu({
             ? `flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] leading-none transition-colors hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-sky-400/60 ${tone.container} ${tone.text}`
             : `flex max-w-full items-center gap-2 rounded-lg border px-2 py-1.5 text-xs transition-colors hover:brightness-95 focus:outline-none focus:ring-2 focus:ring-sky-400/60 ${tone.container}`
         }
-        title={`${countLabel} · ${nextExpiryLabel} · Click for expiry details`}
+        title={`${countLabel} · ${stale ? "Last known data; refresh unavailable" : nextExpiryLabel} · Click for expiry details`}
       >
         <span
           className={
@@ -126,7 +128,7 @@ export function ResetCreditsMenu({
           {countLabel}
         </span>
         <span className={`truncate ${compact ? "" : tone.text}`}>
-          · {nextExpiryLabel}
+          · {stale ? "Refresh needed" : nextExpiryLabel}
         </span>
         <svg
           className={`h-3 w-3 shrink-0 transition-transform ${isOpen ? "rotate-180" : ""}`}
@@ -180,7 +182,7 @@ export function ResetCreditsMenu({
             ))}
           </div>
           <div className="border-t border-gray-100 px-3 py-2 text-[10px] text-gray-400 dark:border-gray-800 dark:text-gray-500">
-            Times shown in your local time
+            {stale ? "Last known resets. Refresh unavailable; availability may have changed." : "Times shown in your local time"}
           </div>
         </div>
       )}
