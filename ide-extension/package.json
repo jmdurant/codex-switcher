@@ -2,7 +2,7 @@
   "name": "ai-account-switcher-resume",
   "displayName": "AI Account Switcher Resume",
   "description": "Resumes Codex and agy integrated-terminal sessions after AI Account Switcher changes profiles.",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "publisher": "jmdurant",
   "private": true,
   "engines": {

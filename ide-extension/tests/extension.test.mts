@@ -110,6 +110,7 @@ function execution(command: string) {
 }
 
 async function scenario(options: {
+  launchMode?: string; expectedYolo?: boolean;
   capturedStatus?: string; readyText?: string; phase?: string; disableBeforeReady?: boolean;
   beforeLaunch?: Record<string, unknown>; atReady?: Record<string, unknown>;
   expectContinuation?: boolean;
@@ -173,7 +174,7 @@ async function scenario(options: {
   });
   try {
     module.exports.activate({ subscriptions: [], extensionPath: root });
-    const original = execution((options.autoDiscover || options.twoUnknown) ? "codex" : `codex resume ${id}`);
+    const original = execution(((options.autoDiscover || options.twoUnknown) ? "codex" : `codex resume ${id}`) + (options.launchMode ? ` ${options.launchMode}` : ""));
     if (!options.recovered) events.start({ terminal, execution: original, shellIntegration: terminal.shellIntegration });
     if (options.twoUnknown) events.start({ terminal: secondTerminal, execution: execution("codex"), shellIntegration: terminal.shellIntegration });
     if (options.autoDiscover && !options.ambiguous) await until(() => messages.some(s => s.includes("Automatically identified")));
@@ -209,7 +210,7 @@ async function scenario(options: {
       assert.equal(launches.length, 0);
     } else {
       await until(() => launches.length === 1);
-      assert.deepEqual(launches[0], ["codex", "resume", id]);
+      assert.deepEqual(launches[0], ["codex", "resume", id, ...(options.expectedYolo === false ? [] : ["--yolo"])]);
       if (options.exitStartup) {
         events.end({terminal,execution:resumed,exitCode:1});
         assert.ok(messages.some(s => s.includes("exited with code 1")));
@@ -253,6 +254,9 @@ async function scenario(options: {
 }
 
 test("full bridge resumes the exact session and continues its interrupted goal once", () => scenario());
+test("bridge preserves explicit YOLO mode", () => scenario({launchMode:"--yolo"}));
+test("bridge preserves the long YOLO alias", () => scenario({launchMode:"--dangerously-bypass-approvals-and-sandbox"}));
+test("bridge suppresses YOLO for an explicitly guarded launch", () => scenario({launchMode:"--sandbox workspace-write",expectedYolo:false}));
 test("full bridge recognizes the specific paused-goal startup choice", () => scenario({ readyText: "Resume paused goal?\nMark it active and continue when idle" }));
 test("a previously paused goal is reopened without automatic continuation", () => scenario({ capturedStatus: "paused" }));
 test("disabling continuation before ready preserves plain exact resume", () => scenario({ disableBeforeReady: true }));

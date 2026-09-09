@@ -37,7 +37,7 @@ test("exact command capture never mistakes prompts or shell text for a session I
   assert.equal(sessionIdFromCommand(`codex resume ${id}`), id);
   assert.equal(sessionIdFromCommand(`& 'C:\\tools\\codex.ps1' resume '${id}'`), id);
   for (const line of [`echo codex resume ${id}`, "codex resume --last", `codex 'explain resume ${id}'`, `codex resume ${id};echo`, "agy --continue"]) assert.equal(sessionIdFromCommand(line), undefined);
-  assert.deepEqual(resumeInvocation("codex", id).args, ["resume", id]);
+  assert.deepEqual(resumeInvocation("codex", id).args, ["resume", id, "--yolo"]);
   assert.throws(() => resumeInvocation("codex", "x;echo unsafe"));
 });
 test("status detection requires an explicit session label", () => {

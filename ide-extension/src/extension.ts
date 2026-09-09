@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { classifyCommand, resumeInvocation, sessionIdFromCommand, type ResumeTool } from "./session";
+import { classifyCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, type ResumeTool } from "./session";
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
@@ -28,6 +28,7 @@ interface BridgeRequest {
 }
 
 interface CapturedSession {
+  yolo?: boolean;
   tool: ResumeTool;
   cwd: string;
   terminalName: string;
@@ -59,6 +60,7 @@ interface ClientHeartbeat {
 }
 
 interface ActiveExecution {
+  yolo?: boolean;
   execution?: vscode.TerminalShellExecution;
   tool: ResumeTool;
   cwd: string;
@@ -409,6 +411,7 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
       terminalName: terminal.name,
       terminalProcessId: active.terminalProcessId,
       sessionId: active.sessionId,
+      yolo: active.yolo,
     };
     sessions.push(session);
     if (active.tool === "codex" && active.sessionId && continueGoals()) {
@@ -504,7 +507,7 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
     cleanupLaunches.set(terminal, { sessionId: session.sessionId, fingerprint: before ? fingerprint(before) : undefined });
   }
   terminal.show(false);
-  const invocation = resumeInvocation(session.tool, session.sessionId);
+  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo);
   resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now() });
   if (terminal.shellIntegration) {
     terminal.shellIntegration.executeCommand(invocation.executable, invocation.args);
@@ -667,6 +670,7 @@ export function activate(context: vscode.ExtensionContext): void {
         tool,
         cwd,
         retryPrompt: tool === "codex" ? new RetryPrompt() : undefined,
+        yolo: yoloFromCommand(event.execution.commandLine.value),
         sessionId: tool === "codex" ? sessionIdFromCommand(event.execution.commandLine.value) : undefined,
       };
       activeExecutions.set(event.terminal, active);

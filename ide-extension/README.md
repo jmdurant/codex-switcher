@@ -160,3 +160,15 @@ started by the extension test suite; tests simulate the terminal and bridge.
 
 References: [goal controls](https://learn.chatgpt.com/use-cases/follow-goals) and
 [persisted goal API](https://learn.chatgpt.com/docs/app-server#manage-a-thread-goal).
+
+## Resume permissions
+
+Codex resumes preserve an observed `--yolo` or
+`--dangerously-bypass-approvals-and-sandbox` launch. When the prior mode is
+unknown, including terminals recovered after an editor reload and older captures,
+resumes default to `codex resume <session-id> --yolo` (or `--last --yolo`).
+This disables approval prompts and sandboxing for the resumed session.
+Explicit sandbox/approval options, `--full-auto`, or `--approve-for-me` suppress
+this fallback; existing Codex configuration then controls resumed permissions.
+Detection uses launch options from shell integration; configuration files and
+in-session permission changes are not inspected. agy still uses `agy --continue`.
