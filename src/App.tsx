@@ -608,7 +608,7 @@ function App() {
     };
   }, []);
 
-  const handleSwitch = async (accountId: string, force = false) => {
+  const handleSwitch = async (accountId: string, force = false, reopenIde = true) => {
     if (switchInFlightRef.current) return false;
     switchInFlightRef.current = true;
     setSwitchingId(accountId);
@@ -626,7 +626,7 @@ function App() {
           return false;
         }
       }
-      await switchAccount(accountId, force);
+      await switchAccount(accountId, force, reopenIde);
       switched = true;
     } catch (err) {
       console.error("Failed to switch account:", err);
@@ -773,7 +773,7 @@ function App() {
     onSwitch: async (accountId, cancelled) => {
       const processes = await checkProcesses();
       if (!processes || cancelled()) return false;
-      const switched = await handleSwitch(accountId, !processes.can_switch);
+      const switched = await handleSwitch(accountId, !processes.can_switch, false);
       if (switched) showWarmupToast("Auto-selected the best available account based on fresh quota.");
       return switched;
     },

@@ -665,6 +665,7 @@ async fn execute_operation(id: &str, name: &str, body: &str) -> Result<Value> {
                 &a.account_id,
                 Some(&a.expected_active_account_id),
                 true,
+                true,
             )
             .await
             .map_err(anyhow::Error::msg)?;

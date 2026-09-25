@@ -267,8 +267,16 @@ pub async fn complete_ide_resume(
     request_id: String,
     resume: bool,
 ) -> Result<IdeResumeCompletion, String> {
+    complete_ide_resume_internal(&request_id, resume, true).await
+}
+
+pub(crate) async fn complete_ide_resume_internal(
+    request_id: &str,
+    resume: bool,
+    reopen_antigravity: bool,
+) -> Result<IdeResumeCompletion, String> {
     let parsed_request_id =
-        Uuid::parse_str(&request_id).map_err(|_| "IDE resume request ID is invalid".to_string())?;
+        Uuid::parse_str(request_id).map_err(|_| "IDE resume request ID is invalid".to_string())?;
     if parsed_request_id.to_string() != request_id {
         return Err("IDE resume request ID is invalid".to_string());
     }
@@ -297,7 +305,9 @@ pub async fn complete_ide_resume(
         && responses
             .iter()
             .any(|response| response.captured_sessions > 0 && response.ide_kind == "antigravity");
-    let reopened_antigravity = should_reopen_antigravity && open_antigravity_ide();
+    let reopened_antigravity = should_reopen_antigravity
+        && reopen_antigravity
+        && open_antigravity_ide();
 
     Ok(IdeResumeCompletion {
         resumed_sessions,

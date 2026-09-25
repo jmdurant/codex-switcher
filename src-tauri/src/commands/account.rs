@@ -221,9 +221,12 @@ pub struct SwitchResumeResult {
 }
 
 #[tauri::command]
-pub async fn switch_account_with_resume(account_id: String) -> Result<SwitchResumeResult, String> {
+pub async fn switch_account_with_resume(
+    account_id: String,
+    reopen_ide: Option<bool>,
+) -> Result<SwitchResumeResult, String> {
     let _guard = SWITCH_SEQUENCE_LOCK.lock().await;
-    coordinated_switch(&account_id, None, false).await
+    coordinated_switch(&account_id, None, false, reopen_ide.unwrap_or(true)).await
 }
 
 /// Caller holds SWITCH_SEQUENCE_LOCK for the complete capture/close/switch/release sequence.
@@ -231,8 +234,9 @@ pub(crate) async fn coordinated_switch(
     account_id: &str,
     expected_active: Option<&str>,
     require_capture: bool,
+    reopen_ide: bool,
 ) -> Result<SwitchResumeResult, String> {
-    use super::{check_codex_processes, complete_ide_resume, kill_codex_processes, prepare_ide_resume};
+    use super::{check_codex_processes, complete_ide_resume_internal, kill_codex_processes, prepare_ide_resume};
     let store = load_accounts().map_err(|e| e.to_string())?;
     if expected_active.is_some() && store.active_account_id.as_deref() != expected_active {
         return Err("Active account changed since the request; refresh quota options.".into());
@@ -248,7 +252,7 @@ pub(crate) async fn coordinated_switch(
     if require_capture { crate::mcp::check_switch_policy(account_id,!running.can_switch)?; }
     let preparation = if running.can_switch { None } else { Some(prepare_ide_resume("codex".into()).await?) };
     if require_capture && !running.can_switch && preparation.as_ref().is_none_or(|p| p.captured_sessions == 0) {
-        if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume(id, false).await; }
+        if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume_internal(&id, false, reopen_ide).await; }
         return Err("No supported IDE session was captured. Install/enable the companion extension before agent-driven interruption.".into());
     }
     let result = async {
@@ -273,7 +277,7 @@ pub(crate) async fn coordinated_switch(
         resume_verified: false, resume_request_id: preparation.as_ref().and_then(|p| p.request_id.clone()), warning: None };
     if let Some(id) = outcome.resume_request_id.clone() {
         // Even if switching fails, restore captured terminals on the account still active.
-        match complete_ide_resume(id, true).await {
+        match complete_ide_resume_internal(&id, true, reopen_ide).await {
             Ok(completion) => outcome.resume_requested_sessions = completion.resumed_sessions,
             Err(error) => outcome.warning = Some(format!("Resume could not be requested: {error}")),
         }

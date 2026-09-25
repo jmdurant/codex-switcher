@@ -255,10 +255,10 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   }, []);
 
   const switchAccount = useCallback(
-    async (accountId: string, force = false) => {
+    async (accountId: string, force = false, reopenIde = true) => {
       try {
         if (force) {
-          await invokeBackend("switch_account_with_resume", { accountId });
+          await invokeBackend("switch_account_with_resume", { accountId, reopenIde });
         } else {
           await invokeBackend("switch_account", { accountId, force: false });
         }
