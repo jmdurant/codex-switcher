@@ -26,7 +26,7 @@ function account(id: string, plan_type: string, u = usage()): AccountWithUsage {
 }
 
 test("classifies current plan values", () => {
-  assert.equal(classifyAccount("self_serve_business_prolite"), "team_10x");
+  assert.equal(classifyAccount("self_serve_business_prolite"), "team_5x");
   assert.equal(classifyAccount("team"), "team");
   assert.equal(classifyAccount("quorum"), "quorum");
 });
