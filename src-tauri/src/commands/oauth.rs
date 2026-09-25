@@ -2,6 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use tiny_http::Server;
 use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
@@ -19,6 +20,7 @@ enum PendingOAuthTarget {
 struct PendingOAuth {
     rx: oneshot::Receiver<anyhow::Result<OAuthLoginResult>>,
     cancelled: Arc<AtomicBool>,
+    server: Arc<Server>,
     target: PendingOAuthTarget,
 }
 
@@ -113,9 +115,10 @@ async fn start_login_for_target(
         pending.take()
     } {
         previous.cancelled.store(true, Ordering::Relaxed);
+        previous.server.unblock();
     }
 
-    let (info, rx, cancelled) = start_oauth_login(account_name, login_hint)
+    let (info, rx, cancelled, server) = start_oauth_login(account_name, login_hint)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -125,6 +128,7 @@ async fn start_login_for_target(
         *pending = Some(PendingOAuth {
             rx,
             cancelled,
+            server,
             target,
         });
     }
@@ -183,6 +187,7 @@ pub async fn cancel_login() -> Result<(), String> {
     let mut pending = PENDING_OAUTH.lock().unwrap();
     if let Some(pending_oauth) = pending.take() {
         pending_oauth.cancelled.store(true, Ordering::Relaxed);
+        pending_oauth.server.unblock();
     }
     Ok(())
 }

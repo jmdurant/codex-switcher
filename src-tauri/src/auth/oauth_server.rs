@@ -144,6 +144,7 @@ pub async fn start_oauth_login(
     OAuthLoginInfo,
     oneshot::Receiver<Result<OAuthLoginResult>>,
     Arc<AtomicBool>,
+    Arc<Server>,
 )> {
     let pkce = generate_pkce();
     let state = generate_state();
@@ -195,6 +196,7 @@ pub async fn start_oauth_login(
 
     // Spawn the server in a background thread
     let server = Arc::new(server);
+    let server_for_thread = Arc::clone(&server);
     let pkce_clone = pkce.clone();
     let state_clone = state.clone();
     let cancelled_clone = cancelled.clone();
@@ -202,7 +204,7 @@ pub async fn start_oauth_login(
     thread::spawn(move || {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let result = runtime.block_on(run_oauth_server(
-            server,
+            server_for_thread,
             pkce_clone,
             state_clone,
             redirect_uri,
@@ -212,7 +214,7 @@ pub async fn start_oauth_login(
         let _ = tx.send(result);
     });
 
-    Ok((login_info, rx, cancelled))
+    Ok((login_info, rx, cancelled, server))
 }
 
 /// Run the OAuth callback server
