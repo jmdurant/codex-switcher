@@ -134,6 +134,13 @@ pub async fn switch_account(account_id: String, force: Option<bool>) -> Result<(
 }
 
 pub async fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String> {
+    let _switch_guard = SWITCH_SEQUENCE_LOCK.lock().await;
+    switch_account_inner(account_id, force).await
+}
+
+pub(crate) static SWITCH_SEQUENCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), String> {
     let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
     let mut store = load_accounts().map_err(|e| e.to_string())?;
 
@@ -202,6 +209,77 @@ pub async fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), S
     }
 
     Ok(())
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct SwitchResumeResult {
+    pub switched: bool,
+    pub resume_requested_sessions: usize,
+    pub resume_verified: bool,
+    pub resume_request_id: Option<String>,
+    pub warning: Option<String>,
+}
+
+#[tauri::command]
+pub async fn switch_account_with_resume(account_id: String) -> Result<SwitchResumeResult, String> {
+    let _guard = SWITCH_SEQUENCE_LOCK.lock().await;
+    coordinated_switch(&account_id, None, false).await
+}
+
+/// Caller holds SWITCH_SEQUENCE_LOCK for the complete capture/close/switch/release sequence.
+pub(crate) async fn coordinated_switch(
+    account_id: &str,
+    expected_active: Option<&str>,
+    require_capture: bool,
+) -> Result<SwitchResumeResult, String> {
+    use super::{check_codex_processes, complete_ide_resume, kill_codex_processes, prepare_ide_resume};
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    if expected_active.is_some() && store.active_account_id.as_deref() != expected_active {
+        return Err("Active account changed since the request; refresh quota options.".into());
+    }
+    if store.active_account_id.as_deref() == Some(account_id) {
+        return Ok(SwitchResumeResult { switched: false, resume_requested_sessions: 0,
+            resume_verified: false, resume_request_id: None, warning: None });
+    }
+    // Verify credentials before stopping any session.
+    let target = store.accounts.iter().find(|a| a.id == account_id).ok_or("Account not found")?;
+    crate::auth::ensure_chatgpt_tokens_fresh(target).await.map_err(|e| e.to_string())?;
+    let running = check_codex_processes().await?;
+    if require_capture { crate::mcp::check_switch_policy(account_id,!running.can_switch)?; }
+    let preparation = if running.can_switch { None } else { Some(prepare_ide_resume("codex".into()).await?) };
+    if require_capture && !running.can_switch && preparation.as_ref().is_none_or(|p| p.captured_sessions == 0) {
+        if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume(id, false).await; }
+        return Err("No supported IDE session was captured. Install/enable the companion extension before agent-driven interruption.".into());
+    }
+    let result = async {
+        if !running.can_switch {
+            if require_capture { crate::mcp::check_switch_policy(account_id,true)?; }
+            let killed = if require_capture {
+                let id = preparation.as_ref().and_then(|p|p.request_id.as_deref()).ok_or("Missing resume capture")?;
+                let terminals = super::ide_bridge::captured_terminal_pids(id).map_err(|e|e.to_string())?;
+                super::process::kill_captured_codex_processes(terminals).await?
+            } else { kill_codex_processes().await? };
+            if !killed.failed_pids.is_empty() { return Err("Some Codex processes could not be stopped".into()); }
+            for _ in 0..20 {
+                if check_codex_processes().await?.can_switch { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+        // Check again, rather than force past a process started during preparation.
+        if require_capture { crate::mcp::check_switch_policy(account_id,false)?; }
+        switch_account_inner(account_id, false).await
+    }.await;
+    let mut outcome = SwitchResumeResult { switched: result.is_ok(), resume_requested_sessions: 0,
+        resume_verified: false, resume_request_id: preparation.as_ref().and_then(|p| p.request_id.clone()), warning: None };
+    if let Some(id) = outcome.resume_request_id.clone() {
+        // Even if switching fails, restore captured terminals on the account still active.
+        match complete_ide_resume(id, true).await {
+            Ok(completion) => outcome.resume_requested_sessions = completion.resumed_sessions,
+            Err(error) => outcome.warning = Some(format!("Resume could not be requested: {error}")),
+        }
+    }
+    result.map_err(|error| format!("{error}. Captured sessions were released for resume; startup is not verified."))?;
+    Ok(outcome)
 }
 
 /// Remove an account

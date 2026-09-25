@@ -1,7 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { AutoQuotaPolicy } from "../lib/quotaOptions";
+import type { AccountInfo } from "../types";
+import { AgentAccessSettings } from "./AgentAccessSettings";
 
 interface Props {
+  accounts: AccountInfo[];
   open: boolean;
   onClose: () => void;
   autoEnabled: boolean;
@@ -10,7 +13,7 @@ interface Props {
   onAutoPolicyChange: (policy: AutoQuotaPolicy) => void;
 }
 
-export function QuotaSettings({ open, onClose, autoEnabled, autoPolicy, onAutoEnabledChange, onAutoPolicyChange }: Props) {
+export function QuotaSettings({ accounts, open, onClose, autoEnabled, autoPolicy, onAutoEnabledChange, onAutoPolicyChange }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   useEffect(() => {
     if (open && !dialog.current?.open) dialog.current?.showModal();
@@ -45,5 +48,6 @@ export function QuotaSettings({ open, onClose, autoEnabled, autoPolicy, onAutoEn
       </fieldset>
 
     </div>
+    {open && <AgentAccessSettings accounts={accounts} />}
   </dialog>;
 }

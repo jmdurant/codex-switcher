@@ -11,6 +11,7 @@
 
 ## Features
 
+- **Local Agent Connection (MCP)** – Let agents inspect quota, queue durable account switches with supported IDE resume, and optionally redeem banked resets under app-controlled permissions. [Setup and behavior](docs/agent-mcp.md)
 - **Multi-Account Management** – Add, rename, mask, import, export, and manage multiple Codex and Antigravity accounts in one place
 - **Quick Switching** – Switch between accounts from the main window, native tray menu, or tray popup while preserving rotated ChatGPT sessions
 - **Usage Stats** – View account usage stats for OAuth accounts, including lifetime tokens, daily buckets, streaks, activity insights, and top integrations

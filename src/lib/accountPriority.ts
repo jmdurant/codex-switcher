@@ -1,11 +1,11 @@
 import type { AccountInfo, AccountWithUsage, UsageInfo } from "../types";
 
-export type AccountClass = "team_10x" | "team" | "quorum" | "other";
+export type AccountClass = "team_5x" | "team" | "quorum" | "other";
 
 /** Map the plan values currently returned by ChatGPT to user-facing tiers. */
 export function classifyAccount(planType: string | null | undefined): AccountClass {
   const normalized = planType?.trim().toLowerCase() ?? "";
-  if (normalized === "self_serve_business_prolite") return "team_10x";
+  if (normalized === "self_serve_business_prolite") return "team_5x";
   if (normalized === "team") return "team";
   if (normalized === "quorum") return "quorum";
   return "other";
@@ -13,7 +13,7 @@ export function classifyAccount(planType: string | null | undefined): AccountCla
 
 export function accountClassLabel(accountClass: AccountClass): string {
   switch (accountClass) {
-    case "team_10x": return "10x Team";
+    case "team_5x": return "5x Team";
     case "team": return "Team";
     case "quorum": return "Quorum / Plus";
     default: return "Other";
@@ -39,7 +39,7 @@ function remaining(usage: UsageInfo | undefined): number {
 }
 
 const CLASS_PRIORITY: Record<AccountClass, number> = {
-  team_10x: 0,
+  team_5x: 0,
   team: 1,
   quorum: 2,
   other: 3,

@@ -2,7 +2,7 @@
   "name": "ai-account-switcher-resume",
   "displayName": "AI Account Switcher Resume",
   "description": "Resumes Codex and agy integrated-terminal sessions after AI Account Switcher changes profiles.",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "publisher": "jmdurant",
   "private": true,
   "engines": {
@@ -22,7 +22,7 @@
         "aiAccountSwitcherResume.capacityRetry": {
           "type": "string",
           "enum": ["off", "ask", "automatic"],
-          "default": "ask",
+          "default": "automatic",
           "scope": "window",
           "description": "Retry confirmed model-capacity failures. Automatic sends continue only to observed background Codex terminals with a fresh empty prompt and an eligible goal (or no goal). Other sessions offer Copy continue. Five automatic attempts per hour per session; never spends resets or switches accounts."
         },

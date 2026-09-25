@@ -11,6 +11,14 @@ import { readUsageRefreshIntervalMs } from "../lib/autoWarmup";
 
 export function useAccounts(usageRefreshIntervalMs?: number) {
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
+  const [statsRefreshVersions, setStatsRefreshVersions] = useState<Record<string, number>>({});
+  const refreshStats = useCallback((accountIds: string[]) => {
+    setStatsRefreshVersions((previous) => {
+      const next = { ...previous };
+      for (const id of accountIds) next[id] = (next[id] ?? 0) + 1;
+      return next;
+    });
+  }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const accountsRef = useRef<AccountWithUsage[]>([]);
@@ -113,6 +121,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
         }
 
         if (options?.refreshMetadata) {
+          refreshStats(list.map((account) => account.id));
           await runWithConcurrency(
             list,
             async (account) => {
@@ -182,7 +191,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
         throw err;
       }
     },
-    [buildUsageError, loadAccounts, maxConcurrentUsageRequests, reportUsageToTray, runWithConcurrency]
+    [buildUsageError, loadAccounts, maxConcurrentUsageRequests, reportUsageToTray, runWithConcurrency, refreshStats]
   );
 
   const refreshSingleUsage = useCallback(async (
@@ -191,6 +200,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   ) => {
     try {
       if (options?.refreshMetadata) {
+        refreshStats([accountId]);
         await invokeBackend<AccountInfo>("refresh_account_metadata", { accountId });
         await loadAccounts(true);
       }
@@ -224,7 +234,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
       );
       throw err;
     }
-  }, [buildUsageError, loadAccounts, reportUsageToTray]);
+  }, [buildUsageError, loadAccounts, reportUsageToTray, refreshStats]);
 
   const warmupAccount = useCallback(async (accountId: string) => {
     try {
@@ -247,7 +257,11 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   const switchAccount = useCallback(
     async (accountId: string, force = false) => {
       try {
-        await invokeBackend("switch_account", { accountId, force });
+        if (force) {
+          await invokeBackend("switch_account_with_resume", { accountId });
+        } else {
+          await invokeBackend("switch_account", { accountId, force: false });
+        }
         await loadAccounts(true); // Preserve usage data
       } catch (err) {
         throw err;
@@ -323,12 +337,13 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
     try {
       const account = await invokeBackend<AccountInfo>("complete_login");
       await loadAccounts(true);
+      refreshStats([account.id]);
       await refreshSingleUsage(account.id).catch(() => {});
       return account;
     } catch (err) {
       throw err;
     }
-  }, [loadAccounts, refreshSingleUsage]);
+  }, [loadAccounts, refreshSingleUsage, refreshStats]);
 
   const exportAccountsSlimText = useCallback(async () => {
     try {
@@ -435,6 +450,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
 
   return {
     accounts,
+    statsRefreshVersions,
     loading,
     error,
     loadAccounts,

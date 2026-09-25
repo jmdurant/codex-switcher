@@ -7,10 +7,12 @@ import { ResetCreditsMenu } from "./ResetCreditsMenu";
 import { UsageBar } from "./UsageBar";
 
 const RESET_CREDITS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const RESET_CREDITS_RETRY_INTERVAL_MS = 60 * 1000;
 const USAGE_STATS_OPEN_STORAGE_KEY_PREFIX = "usage-stats-open:";
 
 interface AccountCardProps {
   account: AccountWithUsage;
+  statsRefreshVersion?: number;
   onSwitch: (force?: boolean) => void;
   onWarmup: () => Promise<void>;
   onDelete: () => void;
@@ -98,6 +100,7 @@ function BlurredText({ children, blur }: { children: React.ReactNode; blur: bool
 
 export function AccountCard({
   account,
+  statsRefreshVersion = 0,
   onSwitch,
   onWarmup,
   onDelete,
@@ -265,7 +268,11 @@ export function AccountCard({
   useEffect(() => {
     setResetCredits(null);
     setResetCreditsStale(false);
+  }, [account.id, account.auth_mode]);
 
+  useEffect(() => {
+    // Re-login keeps the same account ID. Explicit refreshes must invalidate
+    // requests made with the old credentials without erasing known credits.
     void loadResetCredits();
     const timer = window.setInterval(() => {
       void loadResetCredits();
@@ -275,7 +282,15 @@ export function AccountCard({
       resetRequestSeq.current += 1;
       window.clearInterval(timer);
     };
-  }, [loadResetCredits]);
+  }, [loadResetCredits, statsRefreshVersion]);
+
+  useEffect(() => {
+    if (!resetCreditsStale) return;
+    const timer = window.setInterval(() => {
+      void loadResetCredits();
+    }, RESET_CREDITS_RETRY_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [loadResetCredits, resetCreditsStale]);
 
 
   return (

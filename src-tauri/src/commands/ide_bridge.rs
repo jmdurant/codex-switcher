@@ -69,6 +69,47 @@ fn bridge_dir() -> Result<PathBuf> {
     Ok(crate::auth::get_config_dir()?.join("ide-bridge"))
 }
 
+/// Only exact session IDs with known owning terminals qualify for agent-driven interruption.
+pub(crate) fn captured_terminal_pids(request_id: &str) -> Result<Vec<u32>> {
+    Uuid::parse_str(request_id)?;
+    let root = bridge_dir()?.join("responses");
+    let mut pids = Vec::new();
+    for entry in fs::read_dir(root)?.filter_map(Result::ok) {
+        let Some(value) = read_json::<serde_json::Value>(&entry.path()) else { continue; };
+        if value["requestId"] != request_id || value["version"] != PROTOCOL_VERSION { continue; }
+        if let Some(sessions) = value["sessions"].as_array() {
+            for session in sessions {
+                if session["tool"] != "codex" || session["sessionId"].as_str().is_none_or(|id|Uuid::parse_str(id).is_err()) { continue; }
+                if let Some(pid) = session["terminalProcessId"].as_u64().filter(|pid|*pid>0 && *pid<=u32::MAX as u64) { pids.push(pid as u32); }
+            }
+        }
+    }
+    Ok(pids)
+}
+
+pub(crate) fn resume_outcome(request_id: &str, expected: usize) -> Result<serde_json::Value> {
+    Uuid::parse_str(request_id)?;
+    let root = bridge_dir()?.join("outcomes");
+    let mut verified = HashSet::new();
+    let mut failed = HashSet::new();
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.filter_map(Result::ok) {
+            if !entry.file_name().to_string_lossy().starts_with(&format!("{request_id}-")) { continue; }
+            let Some(value) = read_json::<serde_json::Value>(&entry.path()) else { continue; };
+            if value["version"] != PROTOCOL_VERSION { continue; }
+            let Some(key) = value["sessionKey"].as_str().filter(|k|k.starts_with(&format!("{request_id}-"))) else { continue; };
+            match value["state"].as_str() {
+                Some("startup_verified") => { verified.insert(key.to_string()); },
+                Some("failed") => { failed.insert(key.to_string()); },
+                _ => {},
+            }
+        }
+    }
+    let count = verified.difference(&failed).count();
+    Ok(serde_json::json!({"resume_verified": expected > 0 && count >= expected && failed.is_empty(),
+        "resume_verified_sessions":count,"resume_failed_sessions":failed.len()}))
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

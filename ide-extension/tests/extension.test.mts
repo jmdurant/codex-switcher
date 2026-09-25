@@ -210,12 +210,15 @@ async function scenario(options: {
       assert.equal(launches.length, 0);
     } else {
       await until(() => launches.length === 1);
+      const outcomeFiles = () => fs.readdir(path.join(bridge, "outcomes")).catch(() => [] as string[]);
+      await until(async () => (await outcomeFiles()).some(name => name.startsWith(requestId) && name.endsWith("-dispatched.json")));
       assert.deepEqual(launches[0], ["codex", "resume", id, ...(options.expectedYolo === false ? [] : ["--yolo"])]);
       if (options.exitStartup) {
         events.end({terminal,execution:resumed,exitCode:1});
         assert.ok(messages.some(s => s.includes("exited with code 1")));
         assert.ok(messages.some(s => s.includes("exited during startup")));
         assert.ok(!messages.some(s => s.includes("Verified running")));
+        await until(async () => (await outcomeFiles()).some(name => name.endsWith("-failed.json")));
         return;
       }
       status = "paused";
@@ -246,6 +249,12 @@ async function scenario(options: {
       intervals.get(250)!();
       await new Promise(resolve => setTimeout(resolve, 20));
       assert.equal(launches.length, 1);
+      if (options.autoDiscover && !options.ambiguous) {
+        assert.ok(!(await outcomeFiles()).some(name => name.endsWith("-startup_verified.json")), "Sending a command is not startup verification");
+        owners = [{ sessionId: id, processId: 33, ancestors: [11] }];
+        intervals.get(5000)!();
+        await until(async () => (await outcomeFiles()).some(name => name.endsWith("-startup_verified.json")));
+      }
     }
   } finally {
     await module.exports.deactivate();

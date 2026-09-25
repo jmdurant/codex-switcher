@@ -144,7 +144,21 @@ pub async fn kill_codex_processes() -> Result<KillCodexProcessesResult, String> 
 }
 
 fn kill_codex_processes_blocking() -> Result<KillCodexProcessesResult, String> {
+    kill_codex_processes_scoped(None)
+}
+
+pub(crate) async fn kill_captured_codex_processes(terminals: Vec<u32>) -> Result<KillCodexProcessesResult, String> {
+    tokio::task::spawn_blocking(move || kill_codex_processes_scoped(Some(&terminals)))
+        .await.map_err(|e|e.to_string())?
+}
+
+fn kill_codex_processes_scoped(terminals: Option<&[u32]>) -> Result<KillCodexProcessesResult, String> {
     let (pids, _) = find_codex_processes().map_err(|e| e.to_string())?;
+    if let Some(terminals) = terminals {
+        if !captured_terminals_cover(&pids, terminals)? {
+            return Err("Some running Codex sessions are not captured by the companion extension. No processes were stopped.".into());
+        }
+    }
     let targeted_count = pids.len();
     let mut killed_pids = Vec::new();
     let mut failed_pids = Vec::new();
@@ -214,6 +228,38 @@ fn kill_codex_processes_blocking() -> Result<KillCodexProcessesResult, String> {
         killed_pids,
         failed_pids,
     })
+}
+
+fn captured_terminals_cover(pids: &[u32], terminals: &[u32]) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        let output = windows_powershell_command().creation_flags(CREATE_NO_WINDOW)
+            .args(["-NoProfile","-NonInteractive","-Command","Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress"])
+            .output().map_err(|e|e.to_string())?;
+        if !output.status.success() { return Err("Could not verify captured process ancestry".into()); }
+        let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).map_err(|e|e.to_string())?;
+        let parents: std::collections::HashMap<u32,u32> = rows.iter().filter_map(|r|Some((r["ProcessId"].as_u64()? as u32,r["ParentProcessId"].as_u64()? as u32))).collect();
+        return Ok(pids.iter().all(|pid| has_captured_ancestor(*pid,terminals,&parents)));
+    }
+    #[cfg(unix)]
+    {
+        let snapshot = read_unix_process_snapshot().ok_or("Could not verify captured process ancestry")?;
+        let covered = expand_process_targets(terminals,Some(&snapshot));
+        return Ok(pids.iter().all(|pid|covered.contains(pid)));
+    }
+    #[allow(unreachable_code)]
+    Ok(false)
+}
+
+#[cfg(any(windows,test))]
+fn has_captured_ancestor(mut pid: u32, terminals: &[u32], parents: &std::collections::HashMap<u32,u32>) -> bool {
+    let mut seen = HashSet::new();
+    while seen.insert(pid) {
+        if terminals.contains(&pid) { return true; }
+        let Some(parent) = parents.get(&pid) else { return false; };
+        pid = *parent;
+    }
+    false
 }
 
 #[cfg(unix)]
@@ -825,6 +871,14 @@ fn is_ide_plugin_process(command: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_interruption_requires_each_process_to_belong_to_a_captured_terminal() {
+        let parents=std::collections::HashMap::from([(10,1),(20,10),(30,20),(40,1),(50,51),(51,50)]);
+        assert!(super::has_captured_ancestor(30,&[10],&parents));
+        assert!(!super::has_captured_ancestor(40,&[10],&parents));
+        assert!(!super::has_captured_ancestor(99,&[10],&parents));
+        assert!(!super::has_captured_ancestor(50,&[10],&parents));
+    }
     #[cfg(unix)]
     use super::is_macos_codex_desktop_process;
     use super::{

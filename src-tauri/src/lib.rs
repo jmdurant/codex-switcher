@@ -9,6 +9,7 @@ pub mod commands;
 pub mod tray;
 pub mod types;
 pub mod web;
+pub mod mcp;
 
 use commands::{
     ack_close_behavior_prompt, add_account_from_file, cancel_login,
@@ -38,6 +39,9 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
+            if let Err(error) = mcp::start_worker(app.handle().clone()) {
+                eprintln!("Agent connection unavailable: {error}");
+            }
             #[cfg(desktop)]
             {
                 app.handle()
@@ -77,6 +81,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            mcp::get_agent_access,
+            mcp::set_agent_access,
+            mcp::get_agent_operations,
+            commands::switch_account_with_resume,
             commands::open_codex_app,
             // Account management
             list_accounts,

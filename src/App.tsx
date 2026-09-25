@@ -5,12 +5,10 @@ import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses
 import { AccountCard, AddAccountModal, AntigravityAccounts, CurrentCodexLogin, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
-  completeIdeResume,
   exportFullBackupFile,
   importFullBackupFile,
   isTauriRuntime,
   invokeBackend,
-  prepareIdeResume,
 } from "./lib/platform";
 import {
   applyTheme,
@@ -204,6 +202,7 @@ function App() {
 
   const {
     accounts,
+    statsRefreshVersions,
     loading,
     error,
     loadAccounts,
@@ -613,17 +612,9 @@ function App() {
     if (switchInFlightRef.current) return false;
     switchInFlightRef.current = true;
     setSwitchingId(accountId);
-    let ideResume: Awaited<ReturnType<typeof prepareIdeResume>> = null;
     let switched = false;
     try {
-      if (force) {
-        ideResume = await prepareIdeResume("codex");
-        const killed = await forceCloseCodexProcesses();
-        if (!killed?.can_switch) {
-          showWarmupToast("Could not close Codex processes. Switch aborted.", true);
-          return false;
-        }
-      } else {
+      if (!force) {
         const latestProcessInfo = await checkProcesses();
         if (!latestProcessInfo) {
           showWarmupToast("Could not check running Codex sessions. Try again.", true);
@@ -641,12 +632,6 @@ function App() {
       console.error("Failed to switch account:", err);
       showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
     } finally {
-      if (ideResume) {
-        const completion = await completeIdeResume(ideResume, switched);
-        if (completion && completion.resumedSessions > 0) {
-          showWarmupToast(`Resuming ${completion.resumedSessions} IDE terminal session${completion.resumedSessions === 1 ? "" : "s"}.`);
-        }
-      }
       setSwitchingId(null);
       switchInFlightRef.current = false;
     }
@@ -2048,6 +2033,7 @@ function App() {
           }}
         />
         <QuotaSettings
+          accounts={accounts}
           open={quotaSettingsOpen}
           onClose={() => setQuotaSettingsOpen(false)}
           autoEnabled={autoQuotaEnabled}
@@ -2176,6 +2162,7 @@ function App() {
                   </h2>
                   <AccountCard
                     account={activeAccount}
+                    statsRefreshVersion={statsRefreshVersions[activeAccount.id] ?? 0}
                     onSwitch={() => { }}
                     onWarmup={() =>
                       handleWarmupAccount(activeAccount.id, activeAccount.name)
@@ -2283,6 +2270,7 @@ function App() {
                     <AccountCard
                       key={account.id}
                       account={account}
+                      statsRefreshVersion={statsRefreshVersions[account.id] ?? 0}
                       onSwitch={(force) => void handleSwitch(account.id, force)}
                       onWarmup={() => handleWarmupAccount(account.id, account.name)}
                       onDelete={() => handleDelete(account.id)}

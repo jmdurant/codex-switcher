@@ -262,6 +262,7 @@ async fn fetch_reset_credits(account: &StoredAccount) -> anyhow::Result<AccountR
     let client = reqwest::Client::new();
     let response = client
         .get(CHATGPT_RESET_CREDITS_URL)
+        .timeout(std::time::Duration::from_secs(20))
         .headers(build_reset_credits_headers(
             access_token,
             chatgpt_account_id,
@@ -276,6 +277,50 @@ async fn fetch_reset_credits(account: &StoredAccount) -> anyhow::Result<AccountR
 
     let payload: ResetCreditsResponse = response.json().await?;
     Ok(map_reset_credits(payload, Utc::now()))
+}
+
+/// Reset availability must not depend on profile-statistics parsing or availability.
+pub async fn get_reset_credits(account_id: &str) -> anyhow::Result<AccountResetCredits> {
+    let account = crate::auth::get_account(account_id)?.ok_or_else(|| anyhow::anyhow!("Account not found"))?;
+    let account = ensure_chatgpt_tokens_fresh(&account).await?;
+    fetch_reset_credits(&account).await
+}
+
+/// Verified against the installed Codex desktop client (26.901.6511.0), which posts
+/// credit_id and redeem_request_id to this route. Never automatically retry a POST.
+pub(crate) async fn consume_reset_credit(account_id: &str, credit_id: &str, request_id: &str) -> anyhow::Result<serde_json::Value> {
+    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let store = load_accounts()?;
+    anyhow::ensure!(store.active_account_id.as_deref() == Some(account_id), "Active account changed before redemption");
+    let account = store.accounts.iter().find(|a| a.id == account_id).ok_or_else(|| anyhow::anyhow!("Account not found"))?;
+    let account = crate::auth::ensure_chatgpt_tokens_fresh_locked(account).await?;
+    let (token, workspace) = extract_chatgpt_auth(&account)?;
+    send_reset_credit_request(&format!("{CHATGPT_RESET_CREDITS_URL}/consume"),build_reset_credits_headers(token,workspace)?,credit_id,request_id).await
+}
+
+async fn send_reset_credit_request(url: &str, headers: HeaderMap, credit_id: &str, request_id: &str) -> anyhow::Result<serde_json::Value> {
+    let response = reqwest::Client::new()
+        .post(url)
+        .headers(headers)
+        .timeout(std::time::Duration::from_secs(25))
+        .json(&serde_json::json!({"credit_id":credit_id,"redeem_request_id":request_id}))
+        .send().await.map_err(|_| anyhow::anyhow!("UNCERTAIN: Redemption response unavailable. Inspect this credit before any further spending."))?;
+    if !response.status().is_success() {
+        anyhow::bail!("UNCERTAIN: Redemption returned HTTP {}. Inspect the credit; do not submit a new operation ID.",response.status());
+    }
+    let payload: serde_json::Value = response.json().await.map_err(|_| anyhow::anyhow!("UNCERTAIN: Redemption response could not be decoded"))?;
+    confirmed_redemption(&payload, credit_id, request_id)
+}
+
+fn confirmed_redemption(payload: &serde_json::Value, credit_id: &str, request_id: &str) -> anyhow::Result<serde_json::Value> {
+    let code = payload["code"].as_str().unwrap_or("");
+    if !matches!(code,"reset"|"already_redeemed") {
+        anyhow::bail!("UNCERTAIN: Redemption did not confirm a reset. Inspect current quota and credit status.");
+    }
+    if payload["credit"]["id"].as_str().is_some_and(|id|id != credit_id) {
+        anyhow::bail!("UNCERTAIN: Redemption reported a different credit");
+    }
+    Ok(serde_json::json!({"code":code,"credit_id":credit_id,"redeem_request_id":request_id}))
 }
 
 fn map_profile_usage(account_id: &str, payload: ProfileUsageResponse) -> AccountUsageStats {
@@ -452,6 +497,36 @@ fn extract_chatgpt_auth(account: &StoredAccount) -> anyhow::Result<(&str, Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn redemption_requires_explicit_confirmation_for_the_selected_credit() {
+        let result = confirmed_redemption(&serde_json::json!({"code":"reset","credit":{"id":"credit-a"}}),"credit-a","request-a").unwrap();
+        assert_eq!(result["redeem_request_id"],"request-a");
+        assert!(confirmed_redemption(&serde_json::json!({"code":"already_redeemed"}),"credit-a","request-a").is_ok());
+        for payload in [serde_json::json!({"code":"pending"}),serde_json::json!({"code":"reset","credit":{"id":"credit-b"}}),serde_json::json!({})] {
+            assert!(confirmed_redemption(&payload,"credit-a","request-a").unwrap_err().to_string().starts_with("UNCERTAIN:"));
+        }
+    }
+
+    #[tokio::test]
+    async fn redemption_sends_exact_credit_and_durable_key_without_retrying_failure() {
+        for status in [200,503] {
+            let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/consume",server.server_addr());
+            let worker = std::thread::spawn(move || {
+                let mut request = server.recv_timeout(std::time::Duration::from_secs(5)).unwrap().unwrap();
+                assert_eq!(request.method(), &tiny_http::Method::Post);
+                let mut body=String::new(); request.as_reader().read_to_string(&mut body).unwrap();
+                assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap(),serde_json::json!({"credit_id":"credit-a","redeem_request_id":"stable-key"}));
+                request.respond(tiny_http::Response::from_string(r#"{"code":"reset","credit":{"id":"credit-a"}}"#).with_status_code(status)).unwrap();
+                assert!(server.recv_timeout(std::time::Duration::from_millis(150)).unwrap().is_none(),"Redemption must not be retried automatically");
+            });
+            let result=send_reset_credit_request(&url,HeaderMap::new(),"credit-a","stable-key").await;
+            if status == 200 { assert_eq!(result.unwrap()["code"],"reset"); }
+            else { assert!(result.unwrap_err().to_string().starts_with("UNCERTAIN:")); }
+            worker.join().unwrap();
+        }
+    }
 
     #[test]
     fn profile_usage_response_maps_profile_stats() {

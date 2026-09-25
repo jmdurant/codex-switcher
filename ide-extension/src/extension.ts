@@ -92,7 +92,7 @@ const retrySent = new Map<string, { turn: string; at: number; warned: boolean }>
 const retryPending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; generation: number }>();
 
 function retryMode(): string {
-  return enabled() ? vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<string>("capacityRetry", "ask") : "off";
+  return enabled() ? vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<string>("capacityRetry", "automatic") : "off";
 }
 function cancelRetries(): void {
   retryGeneration++;
@@ -179,7 +179,15 @@ async function pollCapacityRetries(): Promise<void> {
 
 const activeExecutions = new Map<vscode.Terminal, ActiveExecution>();
 const terminalExecutions = new Map<vscode.Terminal, vscode.TerminalShellExecution>();
-const resumeAttempts = new Map<vscode.Terminal, { sessionId?: string; startedAt: number; execution?: vscode.TerminalShellExecution; verified?: boolean }>();
+const resumeAttempts = new Map<vscode.Terminal, { sessionId?: string; startedAt: number; execution?: vscode.TerminalShellExecution; verified?: boolean; outcomeBase?: string }>();
+
+async function recordResumeOutcome(outcomeBase: string | undefined, state: string): Promise<void> {
+  if (!outcomeBase) return;
+  // Separate immutable state files avoid a late dispatch write overwriting verification.
+  await writeJson(path.join(bridgeRoot, "outcomes", `${outcomeBase}-${state}.json`), {
+    version: PROTOCOL_VERSION, sessionKey: outcomeBase, state, updatedAtMs: Date.now(),
+  }).catch(error => output.appendLine(`Could not record resume outcome: ${String(error)}`));
+}
 const acknowledgedRequests = new Set<string>();
 const resumedResponses = new Set<string>();
 const codexReader = new CodexReader();
@@ -316,6 +324,7 @@ function refreshDiscovery(): Promise<void> {
         const attempt = resumeAttempts.get(terminal);
         if (attempt && !attempt.verified && attempt.sessionId === owner.sessionId) {
           attempt.verified = true;
+          await recordResumeOutcome(attempt.outcomeBase, "startup_verified");
           output.appendLine(`Verified running Codex session ${owner.sessionId} in ${cwd}.`);
         }
       } catch {
@@ -500,7 +509,7 @@ async function waitUntilIdle(terminal: vscode.Terminal): Promise<void> {
   if (terminalExecutions.has(terminal)) throw new Error("Original terminal is still executing; refusing to send a shell command.");
 }
 
-async function executeResume(terminal: vscode.Terminal, session: CapturedSession): Promise<void> {
+async function executeResume(terminal: vscode.Terminal, session: CapturedSession, outcomeBase?: string): Promise<void> {
   await waitUntilIdle(terminal);
   if (session.tool === "codex" && session.sessionId && cleanupDialogs()) {
     const before = await within(codexReader.readGoal(session.sessionId, session.cwd), 4000);
@@ -508,7 +517,8 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
   }
   terminal.show(false);
   const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo);
-  resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now() });
+  resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now(), outcomeBase });
+  await recordResumeOutcome(outcomeBase, "dispatched");
   if (terminal.shellIntegration) {
     terminal.shellIntegration.executeCommand(invocation.executable, invocation.args);
     return;
@@ -517,7 +527,7 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
   terminal.sendText(invocation.commandLine, true);
 }
 
-async function resumeSession(session: CapturedSession): Promise<void> {
+async function resumeSession(session: CapturedSession, outcomeBase?: string): Promise<void> {
   if (!["codex", "agy"].includes(session.tool) || !path.isAbsolute(session.cwd) || (session.sessionId !== undefined && !SESSION_ID.test(session.sessionId))) throw new Error("Invalid captured session.");
   if (session.tool === "codex" && continueGoals() && !session.sessionId) {
     throw new Error("Exact Codex session is unknown. Use Link Codex Session in the command palette; automatic goal continuation never uses --last.");
@@ -547,7 +557,7 @@ async function resumeSession(session: CapturedSession): Promise<void> {
       pendingGoals.set(terminal, { sessionId: session.sessionId, goal: session.goal, expiresAt: Date.now() + 60000, checking: false, timer });
     }
   }
-  try { await executeResume(terminal, session); }
+  try { await executeResume(terminal, session, outcomeBase); }
   catch (error) { resumeAttempts.delete(terminal); cleanupLaunches.delete(terminal); clearDialogCleaner(terminal); clearPendingGoal(terminal); throw error; }
 }
 
@@ -568,11 +578,13 @@ async function resumeResponse(
     return;
   }
 
-  for (const session of response.sessions) {
+  for (const [index, session] of response.sessions.entries()) {
+    const outcomeBase = `${request.requestId}-${crypto.createHash("sha256").update(responseKey).digest("hex").slice(0,16)}-${index}`;
     try {
-      await resumeSession(session);
+      await resumeSession(session, outcomeBase);
       output.appendLine(`Sent ${session.tool} resume command in ${session.cwd}; startup is not yet verified.`);
     } catch (error) {
+      await recordResumeOutcome(outcomeBase, "failed");
       output.appendLine(`Failed to resume ${session.tool} in ${session.cwd}: ${String(error)}`);
       void vscode.window.showWarningMessage(
         `AI Account Switcher could not resume ${session.tool} in ${session.cwd}.`,
@@ -706,6 +718,7 @@ export function activate(context: vscode.ExtensionContext): void {
         resumeAttempts.delete(event.terminal);
         output.appendLine(`Resumed terminal command exited with code ${event.exitCode ?? "unknown"} after ${Math.round((Date.now() - attempt.startedAt) / 1000)} seconds.`);
         if (event.exitCode !== 0 && Date.now() - attempt.startedAt < 15000) {
+          void recordResumeOutcome(attempt.outcomeBase, "failed");
           void vscode.window.showWarningMessage("AI Account Switcher: the resumed command exited during startup. Inspect the terminal error before retrying.");
         }
       }
