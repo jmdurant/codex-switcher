@@ -73,6 +73,7 @@ type AutoWarmupLedger = Record<
   }
 >;
 const appWindow = getCurrentWindow();
+type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 const isMacOs =
   typeof navigator !== "undefined" &&
   /(Mac|iPhone|iPod|iPad)/i.test(navigator.userAgent);
@@ -430,6 +431,12 @@ function App() {
   const handleTitlebarDoubleClick = useCallback(() => {
     if (!isTauriRuntime()) return;
     void appWindow.toggleMaximize();
+  }, []);
+
+  const handleResizeMouseDown = useCallback((event: React.MouseEvent, direction: ResizeDirection) => {
+    if (!isTauriRuntime() || event.button !== 0) return;
+    event.preventDefault();
+    void appWindow.startResizeDragging(direction);
   }, []);
 
   const toggleMask = (accountId: string) => {
@@ -1466,7 +1473,43 @@ function App() {
     visibleOtherAccounts.length === 0;
 
   return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div className="relative min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+      {!isMacOs && isTauriRuntime() && (
+        <div className="pointer-events-none fixed inset-0 z-[100]" aria-hidden="true">
+          <div
+            className="pointer-events-auto absolute inset-x-2 top-0 h-1 cursor-ns-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "North")}
+          />
+          <div
+            className="pointer-events-auto absolute inset-x-2 bottom-0 h-1 cursor-ns-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "South")}
+          />
+          <div
+            className="pointer-events-auto absolute inset-y-2 left-0 w-1 cursor-ew-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "West")}
+          />
+          <div
+            className="pointer-events-auto absolute inset-y-2 right-0 w-1 cursor-ew-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "East")}
+          />
+          <div
+            className="pointer-events-auto absolute left-0 top-0 h-2 w-2 cursor-nwse-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "NorthWest")}
+          />
+          <div
+            className="pointer-events-auto absolute right-0 top-0 h-2 w-2 cursor-nesw-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "NorthEast")}
+          />
+          <div
+            className="pointer-events-auto absolute bottom-0 left-0 h-2 w-2 cursor-nesw-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "SouthWest")}
+          />
+          <div
+            className="pointer-events-auto absolute bottom-0 right-0 h-2 w-2 cursor-nwse-resize"
+            onMouseDown={(event) => handleResizeMouseDown(event, "SouthEast")}
+          />
+        </div>
+      )}
       <header className="sticky top-0 z-40 border-b border-gray-200 bg-white dark:border-gray-800 dark:bg-gray-900">
         <div className="flex h-9 items-center bg-white px-3 dark:bg-gray-900">
           <div
