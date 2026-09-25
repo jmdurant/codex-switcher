@@ -18,10 +18,11 @@ test("capacity delays increase with bounded jitter", () => {
   assert.deepEqual([0,1,2,3,4,5].map(n=>retryDelay(n,0)),[30000,60000,120000,240000,300000,300000]);
   assert.equal(retryDelay(0,0.5),32500);
 });
-test("capacity retries preserve active goal identity and stop for other goal states", () => {
+test("capacity retries preserve resumable goal identity and stop for other goal states", () => {
   const goal:Goal={threadId:id,objective:"existing",createdAt:1,status:"active",tokensUsed:20,tokenBudget:100};
   assert.ok(goalKey(goal)); assert.equal(goalKey(null),"none");
-  for(const status of ["paused","blocked","budgetLimited","usageLimited","complete"] as const) assert.equal(goalKey({...goal,status}),undefined);
+  assert.ok(goalKey({...goal,status:"usageLimited"}));
+  for(const status of ["paused","blocked","budgetLimited","complete"] as const) assert.equal(goalKey({...goal,status}),undefined);
   assert.equal(goalKey({...goal,tokensUsed:100}),undefined);
   assert.notEqual(goalKey({...goal,objective:"replacement"}),goalKey(goal));
   assert.notEqual(goalKey({...goal,tokenBudget:200}),goalKey(goal));

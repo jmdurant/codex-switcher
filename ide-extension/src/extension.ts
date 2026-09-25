@@ -168,7 +168,7 @@ async function pollCapacityRetries(): Promise<void> {
       // No await between final live checks and fixed input. Uncertain claims are never resent.
       if (!valid() || !deliverable() || prompt!.revision !== revision) continue;
       prompt!.invalidate();
-      terminal.sendText("continue", true);
+      terminal.sendText(goal?.status === "usageLimited" ? "/goal resume" : "continue", true);
       retrySent.set(session, { turn: turn.id, at: Date.now(), warned: false });
       output.appendLine(`Sent one capacity retry for ${session}, failed turn ${turn.id}. Awaiting a new turn; this turn cannot be sent again.`);
       } catch { output.appendLine(`Capacity retry check unavailable for ${session}; inspect that terminal manually.`); }

@@ -12,7 +12,9 @@ export function retryDelay(attempt: number, random = Math.random()): number {
 }
 export function goalKey(goal: Goal | null): string | undefined {
   if (goal === null) return "none";
-  if (goal.status !== "active" || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
+  // A capacity failure can move an active goal into usageLimited. That state
+  // is resumable with /goal resume and must retain the same identity/budget.
+  if (!["active", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
   return `${fingerprint(goal)}:${goal.tokenBudget}`;
 }
 

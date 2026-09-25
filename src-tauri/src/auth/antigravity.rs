@@ -444,8 +444,10 @@ fn read_current_session_snapshot() -> Result<AntigravitySessionSnapshot> {
         });
     }
     let connection = open_state_db()?;
+    // Antigravity IDE 2.x no longer writes the legacy auth-status row. Keep
+    // the field optional so capture can use the unified OAuth state instead.
     #[cfg(not(target_os = "macos"))]
-    let auth_status = read_state_value(&connection, AUTH_STATUS_KEY)?;
+    let auth_status = read_state_value(&connection, AUTH_STATUS_KEY).unwrap_or_default();
     #[cfg(target_os = "macos")]
     let auth_status = connection
         .query_row(
@@ -667,7 +669,14 @@ fn antigravity_profile_dir() -> Result<PathBuf> {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let config_dir = dirs::config_dir().context("Could not find config directory")?;
-        return Ok(config_dir.join("Antigravity"));
+        // The standalone IDE uses the spaced application name. Older desktop
+        // builds used the shorter directory, so retain it as a fallback.
+        let ide = config_dir.join("Antigravity IDE");
+        return Ok(if ide.join("User/globalStorage/state.vscdb").is_file() {
+            ide
+        } else {
+            config_dir.join("Antigravity")
+        });
     }
 }
 
@@ -760,12 +769,14 @@ fn write_antigravity_credential(value: &[u8]) -> Result<()> {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn read_antigravity_credential() -> Result<Vec<u8>> {
-    anyhow::bail!("Antigravity credential capture is currently supported on Windows only")
+    // Linux stores the complete OAuth credential in the unified state row;
+    // there is no separate credential-manager blob to copy.
+    Ok(Vec::new())
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
 fn write_antigravity_credential(_value: &[u8]) -> Result<()> {
-    anyhow::bail!("Antigravity credential switching is currently supported on Windows only")
+    Ok(())
 }
 
 fn ensure_antigravity_not_running() -> Result<()> {
@@ -1015,15 +1026,86 @@ fn discover_language_servers() -> Result<Vec<(Vec<u16>, String)>> {
     super::antigravity_macos::discover_language_servers()
 }
 
-#[cfg(not(any(windows, target_os = "macos")))]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn discover_language_servers() -> Result<Vec<(Vec<u16>, String)>> {
-    anyhow::bail!("Live Antigravity usage is currently supported on Windows only")
+    // Linux language servers expose the same loopback quota endpoint as macOS,
+    // but process discovery must use /bin/ps and /usr/bin/lsof.
+    let uid = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .context("Could not determine the current user")?;
+    anyhow::ensure!(uid.status.success(), "Could not determine the current user");
+    let uid = String::from_utf8_lossy(&uid.stdout).trim().to_owned();
+    let listing = std::process::Command::new("/bin/ps")
+        .args(["-axo", "pid=,uid=,comm="])
+        .output()
+        .context("Failed to inspect Antigravity language-server processes")?;
+    anyhow::ensure!(listing.status.success(), "Process inspection failed");
+    let mut servers = Vec::new();
+    for line in String::from_utf8_lossy(&listing.stdout).lines() {
+        let mut fields = line.split_whitespace();
+        let Some(pid) = fields.next() else { continue };
+        let Some(process_uid) = fields.next() else { continue };
+        let executable = fields.next().unwrap_or_default();
+        if process_uid != uid || !executable.starts_with("language_server") {
+            continue;
+        }
+        let command = std::process::Command::new("/bin/ps")
+            .args(["-p", pid, "-o", "command="])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        let Some(csrf) = linux_argument_value(&command, "--csrf_token") else {
+            continue;
+        };
+        let sockets = std::process::Command::new("/usr/bin/lsof")
+            .args(["-nP", "-a", "-p", pid, "-iTCP", "-sTCP:LISTEN", "-Fn"])
+            .output()
+            .ok();
+        let Some(sockets) = sockets else { continue };
+        let mut ports = Vec::new();
+        for line in String::from_utf8_lossy(&sockets.stdout).lines() {
+            let Some(address) = line.strip_prefix('n') else { continue };
+            let Some(port) = address.rsplit_once(':').and_then(|(_, p)| p.parse().ok()) else {
+                continue;
+            };
+            if port != 0 { ports.push(port); }
+        }
+        ports.sort_unstable();
+        ports.dedup();
+        if !ports.is_empty() { servers.push((ports, csrf)); }
+    }
+    anyhow::ensure!(!servers.is_empty(), "Open Antigravity or agy to retrieve live usage");
+    Ok(servers)
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn linux_argument_value(command: &str, flag: &str) -> Option<String> {
+    let mut tokens = command.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token == flag { return tokens.next().map(|v| v.trim_matches(['\'', '"']).to_owned()); }
+        if let Some(value) = token.strip_prefix(&format!("{flag}=")) {
+            return Some(value.trim_matches(['\'', '"']).to_owned());
+        }
+    }
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::cell::RefCell;
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[tokio::test]
+    #[ignore = "requires a running signed-in Antigravity language server; read-only"]
+    async fn linux_live_usage_smoke() {
+        let usage = get_live_antigravity_usage().await.unwrap();
+        assert!(!usage.models.is_empty(), "no model quota entries returned");
+        println!("Retrieved {} model quota entries", usage.models.len());
+    }
 
     fn snapshot(email: Option<&str>, suffix: &str) -> AntigravitySessionSnapshot {
         AntigravitySessionSnapshot {
