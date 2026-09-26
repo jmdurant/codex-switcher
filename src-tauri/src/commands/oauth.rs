@@ -7,14 +7,21 @@ use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
 use crate::auth::{
-    add_account, get_account, load_accounts, replace_account_after_relogin, set_active_account,
-    switch_to_account, touch_account, AUTH_OPERATION_LOCK,
+    add_account, get_account, load_accounts, replace_account_after_relogin, switch_to_account,
+    touch_account, AUTH_OPERATION_LOCK,
 };
 use crate::types::{AccountInfo, AuthData, OAuthLoginInfo};
 
 enum PendingOAuthTarget {
     Add,
     Relogin(String),
+}
+
+/// A newly added account should become active only when there was no active
+/// account before the add flow started. Re-login is handled separately and
+/// already preserves the selected account.
+fn should_initialize_added_account(active_account_id: Option<&str>) -> bool {
+    active_account_id.is_none()
 }
 
 struct PendingOAuth {
@@ -59,7 +66,7 @@ fn email_from_account_name(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::email_from_account_name;
+    use super::{email_from_account_name, should_initialize_added_account};
 
     #[test]
     fn add_account_carries_email_forward_without_changing_it() {
@@ -83,6 +90,12 @@ mod tests {
         ] {
             assert_eq!(email_from_account_name(name), None, "{name}");
         }
+    }
+
+    #[test]
+    fn adding_account_only_initializes_an_empty_active_selection() {
+        assert!(should_initialize_added_account(None));
+        assert!(!should_initialize_added_account(Some("existing-account")));
     }
 }
 
@@ -154,9 +167,17 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
 
     let stored = match pending.target {
         PendingOAuthTarget::Add => {
+            let active_before_add = load_accounts()
+                .map_err(|e| e.to_string())?
+                .active_account_id;
             let stored = add_account(account).map_err(|e| e.to_string())?;
-            set_active_account(&stored.id).map_err(|e| e.to_string())?;
-            switch_to_account(&stored).map_err(|e| e.to_string())?;
+            if should_initialize_added_account(active_before_add.as_deref()) {
+                // `add_account` assigns the first account as active. Only in
+                // that empty-store case should the new credentials be written
+                // to Codex; adding another account must leave the current
+                // login and active-account selection untouched.
+                switch_to_account(&stored).map_err(|e| e.to_string())?;
+            }
             touch_account(&stored.id).map_err(|e| e.to_string())?;
             stored
         }
