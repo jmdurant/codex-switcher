@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { SESSION_ID } from "./goal.ts";
 
 export interface SessionOwner { sessionId: string; processId: number; ancestors: number[] }
+export interface UnixCodexProcess { processId: number; ancestors: number[]; cwd: string }
 export function parseOwners(value: unknown): SessionOwner[] {
   if (!Array.isArray(value)) throw new Error("Invalid session discovery response.");
   return value.filter((row): row is SessionOwner => Boolean(row && SESSION_ID.test(row.sessionId) &&
@@ -24,4 +25,37 @@ export async function discoverSessions(scriptPath: string): Promise<SessionOwner
     windowsHide: true, timeout: 8000, maxBuffer: 1024 * 1024,
   });
   return parseOwners(JSON.parse(stdout.replace(/^\uFEFF/, "")));
+}
+
+/** Discover Codex processes below integrated-terminal shells on Linux. */
+export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> {
+  if (process.platform === "win32") return [];
+  const { stdout } = await promisify(execFile)("ps", ["-eo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
+  const rows = new Map<number, { ppid: number; args: string }>();
+  for (const line of stdout.split("\n")) {
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    if (match) rows.set(Number(match[1]), { ppid: Number(match[2]), args: match[3] });
+  }
+  const result: UnixCodexProcess[] = [];
+  for (const [pid, row] of rows) {
+    if (!/(^|\/)codex(?:\s|$)/.test(row.args) || /app-server|codex-switcher/.test(row.args)) continue;
+    const ancestors: number[] = [pid];
+    let parent = row.ppid;
+    for (let i = 0; i < 32 && parent > 1; i++) {
+      ancestors.push(parent);
+      const next = rows.get(parent)?.ppid;
+      if (!next || next === parent) break;
+      parent = next;
+    }
+    try {
+      const cwd = await fsReadlink(`/proc/${pid}/cwd`);
+      if (cwd.startsWith("/")) result.push({ processId: pid, ancestors, cwd: path.normalize(cwd) });
+    } catch { /* process exited during the snapshot */ }
+  }
+  return result;
+}
+
+async function fsReadlink(file: string): Promise<string> {
+  const { stdout } = await promisify(execFile)("readlink", ["-f", file], { timeout: 1000 });
+  return stdout.trim();
 }

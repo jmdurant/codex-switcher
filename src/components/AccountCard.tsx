@@ -404,15 +404,7 @@ export function AccountCard({
 
       {/* Actions */}
       <div className="flex items-center justify-center gap-2 mt-3">
-        {account.is_active ? (
-          <button
-            disabled
-            className="flex-1 h-9 px-4 flex items-center justify-center text-sm font-medium rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 border border-gray-200 dark:border-gray-700 cursor-default"
-          >
-            ✓ Active
-          </button>
-        ) : (
-          <>
+        <>
             <button
               onClick={() => {
                 if (codexRunning) {
@@ -429,7 +421,7 @@ export function AccountCard({
               }`}
               title={codexRunning ? "Codex is running — click to force-close and switch" : undefined}
             >
-              {switching ? "Switching..." : codexRunning ? "Switch & Close" : "Switch"}
+              {switching ? "Activating..." : account.is_active ? (codexRunning ? "Activate & Close" : "Activate") : codexRunning ? "Switch & Close" : "Switch"}
             </button>
 
             {/* Confirmation dialog when Codex is running */}
@@ -438,7 +430,7 @@ export function AccountCard({
                 <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
                   <div className="p-5 border-b border-gray-100 dark:border-gray-800">
                     <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-                      Switch while Codex is running?
+                      {account.is_active ? "Activate while Codex is running?" : "Switch while Codex is running?"}
                     </h2>
                   </div>
                   <div className="p-5 space-y-3">
@@ -467,14 +459,13 @@ export function AccountCard({
                       }}
                       className="px-4 py-2.5 text-sm font-medium rounded-lg bg-red-600 hover:bg-red-700 text-white transition-colors"
                     >
-                      Force close &amp; switch
+                      {account.is_active ? "Force close & activate" : "Force close & switch"}
                     </button>
                   </div>
                 </div>
               </div>
             )}
           </>
-        )}
         <button
           onClick={() => {
             void onWarmup();

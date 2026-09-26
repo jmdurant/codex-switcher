@@ -39,10 +39,10 @@ test("last-resume commands are identified for Linux session binding", () => {
   assert.equal(sessionIdFromCommand("codex --no-daemon resume 01991234-1234-7123-8123-123456789abc --yolo"), "01991234-1234-7123-8123-123456789abc");
 });
 
-test("Linux resume bypasses the shared daemon's cached account", () => {
-  const invocation = resumeInvocation("codex", undefined, true, true);
-  assert.deepEqual(invocation.args, ["--no-daemon", "resume", "--last", "--yolo"]);
-  assert.equal(invocation.commandLine, "codex --no-daemon resume --last --yolo");
+test("resume keeps the normal daemon connection to the conversation owner", () => {
+  const invocation = resumeInvocation("codex", undefined, true);
+  assert.deepEqual(invocation.args, ["resume", "--last", "--yolo"]);
+  assert.equal(invocation.commandLine, "codex resume --last --yolo");
   assert.equal(yoloFromCommand(invocation.commandLine), true);
 });
 

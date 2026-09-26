@@ -130,6 +130,21 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
 }
 
 async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<StoredAccount> {
+    refresh_chatgpt_tokens_inner(account, false).await
+}
+
+pub(crate) async fn refresh_host_managed_tokens(account: &StoredAccount) -> Result<StoredAccount> {
+    // An activation holds this lock while awaiting the daemon actor. Do not
+    // deadlock that activation if a refresh arrived just before its request.
+    let _auth_guard = AUTH_OPERATION_LOCK.try_lock()
+        .map_err(|_| anyhow::anyhow!("Account operation in progress; retry refresh"))?;
+    if load_accounts()?.active_account_id.as_deref() != Some(account.id.as_str()) {
+        anyhow::bail!("Host-managed account is no longer selected");
+    }
+    refresh_chatgpt_tokens_inner(account, true).await
+}
+
+async fn refresh_chatgpt_tokens_inner(account: &StoredAccount, host_managed: bool) -> Result<StoredAccount> {
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
 
     // Multiple API calls can fail with the same snapshot. Once another caller
@@ -138,7 +153,7 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
         return Ok(current);
     }
 
-    if is_active && crate::commands::process::ensure_codex_not_running().is_err() {
+    if !host_managed && is_active && crate::commands::process::ensure_codex_not_running().is_err() {
         println!(
             "[Auth] Using the running app's live credentials for active account {}",
             current.name

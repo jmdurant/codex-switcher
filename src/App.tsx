@@ -2206,7 +2206,7 @@ function App() {
                   <AccountCard
                     account={activeAccount}
                     statsRefreshVersion={statsRefreshVersions[activeAccount.id] ?? 0}
-                    onSwitch={() => { }}
+                    onSwitch={(force) => void handleSwitch(activeAccount.id, force)}
                     onWarmup={() =>
                       handleWarmupAccount(activeAccount.id, activeAccount.name)
                     }

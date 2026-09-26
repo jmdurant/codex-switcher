@@ -5,11 +5,11 @@ export interface AutoQuotaPolicy {
   useExpiringFiveHourQuota: boolean;
   leadMinutes: number;
 }
-export const DEFAULT_AUTO_QUOTA_POLICY: AutoQuotaPolicy = { useExpiringFiveHourQuota: true, leadMinutes: 60 };
+export const DEFAULT_AUTO_QUOTA_POLICY: AutoQuotaPolicy = { useExpiringFiveHourQuota: false, leadMinutes: 60 };
 export function normalizeAutoQuotaPolicy(value: unknown): AutoQuotaPolicy {
   const stored = value && typeof value === "object" ? value as Partial<AutoQuotaPolicy> : {};
   return {
-    useExpiringFiveHourQuota: stored.useExpiringFiveHourQuota === undefined ? true : stored.useExpiringFiveHourQuota === true,
+    useExpiringFiveHourQuota: stored.useExpiringFiveHourQuota === true,
     leadMinutes: [15, 30, 60, 120].includes(stored.leadMinutes ?? 0) ? stored.leadMinutes! : 60,
   };
 }

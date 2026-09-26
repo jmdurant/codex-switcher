@@ -20,6 +20,7 @@ const compiled = await build({
     builder.onLoad({ filter: /.*/, namespace: "discovery-test" }, () => ({ contents: `
       export { ownerForTerminal } from ${JSON.stringify(path.resolve("src/sessionDiscovery.ts"))};
       export async function discoverSessions() { return globalThis.getTestOwners(); }
+      export async function discoverUnixCodexProcesses() { return []; }
     `, resolveDir: process.cwd() }));
   } }],
 });
@@ -212,7 +213,7 @@ async function scenario(options: {
       await until(() => launches.length === 1);
       const outcomeFiles = () => fs.readdir(path.join(bridge, "outcomes")).catch(() => [] as string[]);
       await until(async () => (await outcomeFiles()).some(name => name.startsWith(requestId) && name.endsWith("-dispatched.json")));
-      assert.deepEqual(launches[0], ["codex", ...(!options.autoDiscover && process.platform === "linux" ? ["--no-daemon"] : []), "resume", id, ...(options.expectedYolo === false ? [] : ["--yolo"])]);
+      assert.deepEqual(launches[0], ["codex", "resume", id, ...(options.expectedYolo === false ? [] : ["--yolo"])]);
       if (options.exitStartup) {
         events.end({terminal,execution:resumed,exitCode:1});
         assert.ok(messages.some(s => s.includes("exited with code 1")));

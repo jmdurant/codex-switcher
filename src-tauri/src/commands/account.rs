@@ -150,10 +150,6 @@ async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), Strin
         .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    if store.active_account_id.as_deref() == Some(account_id) {
-        return Ok(());
-    }
-
     // When force=false (default, tray native menu path) we still guard.
     // When force=true (user confirmed the dialog in the React UI) we skip.
     if !force {
@@ -174,6 +170,11 @@ async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), Strin
 
     // Write to ~/.codex/auth.json
     switch_to_account(&account).map_err(|e| e.to_string())?;
+
+    // Reopening a TUI reconnects to the same cached daemon login. Explicitly
+    // hand off credentials and verify its identity before marking selection.
+    super::daemon_auth::activate(&account).await.map_err(|e|
+        format!("Credentials were written, but the running Codex account could not be verified: {e}. Retry Activate before continuing"))?;
 
     // Update the active account in our store
     set_active_account(account_id).map_err(|e| e.to_string())?;
@@ -241,19 +242,15 @@ pub(crate) async fn coordinated_switch(
     if expected_active.is_some() && store.active_account_id.as_deref() != expected_active {
         return Err("Active account changed since the request; refresh quota options.".into());
     }
-    if store.active_account_id.as_deref() == Some(account_id) {
-        return Ok(SwitchResumeResult { switched: false, resume_requested_sessions: 0,
-            resume_verified: false, resume_request_id: None, warning: None });
-    }
     // Verify credentials before stopping any session.
     let target = store.accounts.iter().find(|a| a.id == account_id).ok_or("Account not found")?;
     crate::auth::ensure_chatgpt_tokens_fresh(target).await.map_err(|e| e.to_string())?;
     let running = check_codex_processes().await?;
     if require_capture { crate::mcp::check_switch_policy(account_id,!running.can_switch)?; }
     let preparation = if running.can_switch { None } else { Some(prepare_ide_resume("codex".into()).await?) };
-    if require_capture && !running.can_switch && preparation.as_ref().is_none_or(|p| p.captured_sessions == 0) {
+    if !running.can_switch && preparation.as_ref().is_none_or(|p| p.captured_sessions == 0) {
         if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume_internal(&id, false, reopen_ide).await; }
-        return Err("No supported IDE session was captured. Install/enable the companion extension before agent-driven interruption.".into());
+        return Err("No supported IDE session was captured. Install/enable the companion extension before interrupting Codex.".into());
     }
     let result = async {
         if !running.can_switch {

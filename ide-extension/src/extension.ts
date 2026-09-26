@@ -6,7 +6,7 @@ import * as vscode from "vscode";
 
 import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, type ResumeTool } from "./session";
 import { CodexReader } from "./codexRpc";
-import { discoverSessions, ownerForTerminal } from "./sessionDiscovery";
+import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { RetryLedger, RetryPrompt, overloaded, retryDelay, goalKey } from "./capacityRetry";
 import { SESSION_ID, canContinueGoal, captureGoal, fingerprint, goalReadyAction, sessionIdFromStatus, type GoalCapture } from "./goal";
@@ -276,8 +276,36 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
 
 function refreshDiscovery(): Promise<void> {
   if (discovering) return discovering;
-  if (stopped || !enabled() || process.platform !== "win32") return Promise.resolve();
+  if (stopped || !enabled()) return Promise.resolve();
   discovering = (async () => {
+    if (process.platform !== "win32") {
+      const processes = await discoverUnixCodexProcesses();
+      const usedSessions = new Set<string>();
+      for (const terminal of vscode.window.terminals) {
+        const terminalPid = await terminal.processId;
+        if (!terminalPid || stopped || !enabled()) continue;
+        let active = activeExecutions.get(terminal);
+        if (active && active.tool !== "codex") continue;
+        const matches = processes.filter(entry => entry.ancestors.includes(terminalPid));
+        if (matches.length !== 1) continue;
+        const entry = matches[0];
+        const sessionId = await codexReader.recentInteractiveSession(entry.cwd);
+        if (!sessionId || usedSessions.has(sessionId)) continue;
+        const session = await codexReader.interactiveSession(sessionId);
+        if (!session || path.normalize(session.cwd) !== path.normalize(entry.cwd)) continue;
+        usedSessions.add(sessionId);
+        if (!active) {
+          active = { tool: "codex", cwd: entry.cwd, terminalProcessId: terminalPid, discovered: true };
+          activeExecutions.set(terminal, active);
+        }
+        active.cwd = entry.cwd;
+        active.terminalProcessId = terminalPid;
+        active.sessionId = sessionId;
+        active.discovered = true;
+      }
+      queueHeartbeat();
+      return;
+    }
     const owners = await discoverSessions(discoveryScript);
     for (const terminal of vscode.window.terminals) {
       const pid = await terminal.processId;
@@ -526,9 +554,9 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
     cleanupLaunches.set(terminal, { sessionId: session.sessionId, fingerprint: before ? fingerprint(before) : undefined });
   }
   terminal.show(false);
-  // The shared Codex daemon can retain a previous login after auth.json is
-  // switched. Linux resumes must read the newly selected credentials instead.
-  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo, process.platform === "linux");
+  // Reconnect through Codex's normal runtime: its daemon may still own the
+  // conversation after the terminal exits. An independent writer conflicts.
+  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo);
   resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now(), outcomeBase });
   await recordResumeOutcome(outcomeBase, "dispatched");
   if (terminal.shellIntegration) {

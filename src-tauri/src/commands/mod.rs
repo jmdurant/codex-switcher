@@ -1,6 +1,7 @@
 //! Tauri commands module
 
 pub mod account;
+pub(crate) mod daemon_auth;
 pub mod current_login;
 pub mod account_stats;
 pub mod antigravity;

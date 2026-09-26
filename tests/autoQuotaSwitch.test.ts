@@ -80,7 +80,7 @@ function shortAccount(id: string, remaining = 80, minutes = 45, weeklyRemaining 
 test("expiry mode preempts healthy weekly-only quota and prefers the earliest five-hour deadline", () => {
   const accounts = [account("active", 90), shortAccount("later", 95, 50), shortAccount("earlier", 40, 20)];
   assert.equal(selectAutoQuotaOption(accounts, now, excluded, expiryPolicy)?.account.id, "earlier");
-  assert.equal(selectAutoQuotaOption(accounts, now)?.account.id, "earlier");
+  assert.equal(selectAutoQuotaOption(accounts, now), undefined);
   assert.equal(selectAutoQuotaOption(accounts, now, excluded, {useExpiringFiveHourQuota:false, leadMinutes:60}), undefined);
 });
 test("expiry mode stays below 10 percent until either limit is exhausted", () => {
@@ -137,11 +137,21 @@ test("expiry scanner does not repeatedly scan alternatives while draining the ac
   assert.equal(await findAutoQuotaSwitch(inputs, excluded, expiryPolicy), undefined);
   assert.deepEqual(reads, ["active"]);
 });
-test("missing expiry preference defaults on while explicit off is preserved", () => {
+test("missing expiry preference defaults off while explicit opt-in is preserved", () => {
   assert.deepEqual(normalizeAutoQuotaPolicy({useExpiringFiveHourQuota:false, leadMinutes:60}), {useExpiringFiveHourQuota:false, leadMinutes:60});
-  assert.deepEqual(normalizeAutoQuotaPolicy(null), {useExpiringFiveHourQuota:true, leadMinutes:60});
+  assert.deepEqual(normalizeAutoQuotaPolicy(null), {useExpiringFiveHourQuota:false, leadMinutes:60});
+  assert.deepEqual(normalizeAutoQuotaPolicy({}), {useExpiringFiveHourQuota:false, leadMinutes:60});
   assert.deepEqual(normalizeAutoQuotaPolicy({useExpiringFiveHourQuota:"true", leadMinutes:-1}), {useExpiringFiveHourQuota:false, leadMinutes:60});
   assert.deepEqual(normalizeAutoQuotaPolicy({useExpiringFiveHourQuota:true, leadMinutes:30}), {useExpiringFiveHourQuota:true, leadMinutes:30});
+});
+
+test("default scanner keeps positive quota despite another account's imminent reset", async () => {
+  for (const remaining of [46, 1, 0.01]) {
+    const accounts = [shortAccount("active", remaining, 180), shortAccount("expiring", 72, 60)];
+    assert.equal(await findAutoQuotaSwitch(source(accounts), excluded), undefined);
+  }
+  const accounts = [shortAccount("active", 0, 180), shortAccount("expiring", 72, 60)];
+  assert.equal((await findAutoQuotaSwitch(source(accounts), excluded))?.to.id, "expiring");
 });
 
 

@@ -74,13 +74,13 @@ export function yoloFromCommand(commandLine: string): boolean | undefined {
   return mode;
 }
 
-export function resumeInvocation(tool: ResumeTool, sessionId?: string, yolo?: boolean, noDaemon = false): ResumeInvocation {
+export function resumeInvocation(tool: ResumeTool, sessionId?: string, yolo?: boolean): ResumeInvocation {
   if (sessionId !== undefined && !UUID.test(sessionId)) throw new Error("Invalid Codex session ID.");
   return tool === "codex"
     ? {
         executable: "codex",
-        args: [...(noDaemon ? ["--no-daemon"] : []), "resume", sessionId ?? "--last", ...(yolo === false ? [] : ["--yolo"])],
-        commandLine: `codex${noDaemon ? " --no-daemon" : ""} resume ${sessionId ?? "--last"}${yolo === false ? "" : " --yolo"}`,
+        args: ["resume", sessionId ?? "--last", ...(yolo === false ? [] : ["--yolo"])],
+        commandLine: `codex resume ${sessionId ?? "--last"}${yolo === false ? "" : " --yolo"}`,
       }
     : {
         executable: "agy",
