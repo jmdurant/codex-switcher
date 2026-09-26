@@ -190,7 +190,7 @@ fn kill_codex_processes_scoped(terminals: Option<&[u32]>) -> Result<KillCodexPro
             continue;
         }
 
-        if force_kill_process(pid) {
+        if terminate_process(pid) {
             killed_pids.push(pid);
         } else {
             failed_pids.push(pid);
@@ -344,11 +344,34 @@ fn read_unix_process_snapshot() -> Option<UnixProcessSnapshot> {
     })
 }
 
-fn force_kill_process(pid: u32) -> bool {
+/// Ask an interactive Codex process to exit cleanly before falling back to a
+/// hard kill. Codex's terminal UI enables mouse reporting and alternate-screen
+/// mode; SIGKILL skips its cleanup and can leave those modes enabled in the
+/// integrated terminal, which causes raw sequences such as `35;53;7M` to be
+/// echoed after the account switch.
+fn terminate_process(pid: u32) -> bool {
     #[cfg(unix)]
     {
+        let graceful = Command::new("/bin/kill")
+            .arg("-TERM")
+            .arg(pid.to_string())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if graceful || !process_exists(pid) {
+            for _ in 0..10 {
+                if !process_exists(pid) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if !process_exists(pid) {
+                return true;
+            }
+        }
+
         let killed = Command::new("/bin/kill")
-            .arg("-9")
+            .arg("-KILL")
             .arg(pid.to_string())
             .status()
             .map(|status| status.success())
@@ -358,6 +381,24 @@ fn force_kill_process(pid: u32) -> bool {
 
     #[cfg(windows)]
     {
+        let graceful = windows_system32_command("taskkill.exe")
+            .creation_flags(CREATE_NO_WINDOW)
+            .args(["/T", "/PID", &pid.to_string()])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if graceful || !process_exists(pid) {
+            for _ in 0..10 {
+                if !process_exists(pid) {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            if !process_exists(pid) {
+                return true;
+            }
+        }
+
         let killed = windows_system32_command("taskkill.exe")
             .creation_flags(CREATE_NO_WINDOW)
             .args(["/F", "/T", "/PID", &pid.to_string()])
