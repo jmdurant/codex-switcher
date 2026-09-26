@@ -24,7 +24,8 @@ test("capacity retries preserve resumable goal identity and stop for other goal 
   const goal:Goal={threadId:id,objective:"existing",createdAt:1,status:"active",tokensUsed:20,tokenBudget:100};
   assert.ok(goalKey(goal)); assert.equal(goalKey(null),"none");
   assert.ok(goalKey({...goal,status:"usageLimited"}));
-  for(const status of ["paused","blocked","budgetLimited","complete"] as const) assert.equal(goalKey({...goal,status}),undefined);
+  assert.ok(goalKey({...goal,status:"paused"}));
+  for(const status of ["blocked","budgetLimited","complete"] as const) assert.equal(goalKey({...goal,status}),undefined);
   assert.equal(goalKey({...goal,tokensUsed:100}),undefined);
   assert.notEqual(goalKey({...goal,objective:"replacement"}),goalKey(goal));
   assert.notEqual(goalKey({...goal,tokenBudget:200}),goalKey(goal));

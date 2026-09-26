@@ -15,9 +15,9 @@ export function retryDelay(attempt: number, random = Math.random()): number {
 }
 export function goalKey(goal: Goal | null): string | undefined {
   if (goal === null) return "none";
-  // A capacity failure can move an active goal into usageLimited. That state
-  // is resumable with /goal resume and must retain the same identity/budget.
-  if (!["active", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
+  // A capacity failure can leave the goal paused. Preserve its identity and
+  // let the normal `continue` input wake it without changing the goal.
+  if (!["active", "paused", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
   return `${fingerprint(goal)}:${goal.tokenBudget}`;
 }
 
@@ -40,7 +40,7 @@ export class RetryPrompt {
     const match = /(?:^|\n)[ \t]*› Ask Codex to do anything[ \t]*(?:\n|$)/.exec(text);
     const after = match ? text.slice(match.index + match[0].length).trim() : "";
     if (match && (!after || /^gpt-[\w.-]+[^\n]*$/.test(after)) &&
-        !/Resume paused goal\?|esc to interrupt|Press enter to confirm|Goal paused/i.test(text)) this.observedAt = Date.now();
+        !/Resume paused goal\?|esc to interrupt|Press enter to confirm/i.test(text)) this.observedAt = Date.now();
   }
   invalidate(): void { this.text = ""; this.observedAt = 0; this.revision++; }
 }

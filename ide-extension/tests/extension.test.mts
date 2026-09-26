@@ -85,7 +85,8 @@ async function capacityScenario(change: string) {
       turn = {...turn,id:"01991234-1234-7123-8123-123456789aaa",status:"completed",error:null};
       await module.exports.testPoll();
       assert.ok(messages.some(s=>s.includes("acknowledged by a new turn")));
-    } else assert.deepEqual(sent,[]);
+    } else if (change === "paused") assert.deepEqual(sent,["continue"]);
+    else assert.deepEqual(sent,[]);
   } finally { await module.exports.deactivate(); await fs.rm(root,{recursive:true,force:true}); }
 }
 for (const change of ["success","ask","focused","quota","running","paused","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
