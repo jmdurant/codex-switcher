@@ -183,6 +183,7 @@ pub struct FrontendAppSettings {
     pub open_codex_after_switch: bool,
     pub launch_at_login: bool,
     pub start_minimized: bool,
+    pub continue_interrupted_goals: bool,
 }
 
 /// Return settings the frontend needs (open-after-switch, launch-at-login, start-minimized).
@@ -193,6 +194,7 @@ pub fn get_app_settings() -> FrontendAppSettings {
         open_codex_after_switch: s.open_codex_after_switch,
         launch_at_login: s.launch_at_login,
         start_minimized: s.start_minimized,
+        continue_interrupted_goals: s.continue_interrupted_goals,
     }
 }
 
@@ -203,6 +205,7 @@ pub async fn set_app_settings(
     open_codex_after_switch: Option<bool>,
     launch_at_login: Option<bool>,
     start_minimized: Option<bool>,
+    continue_interrupted_goals: Option<bool>,
 ) -> Result<FrontendAppSettings, String> {
     let mut settings = load_app_settings().unwrap_or_default();
 
@@ -211,6 +214,9 @@ pub async fn set_app_settings(
     }
     if let Some(v) = start_minimized {
         settings.start_minimized = v;
+    }
+    if let Some(v) = continue_interrupted_goals {
+        settings.continue_interrupted_goals = v;
     }
 
     if let Some(v) = launch_at_login {
@@ -232,5 +238,6 @@ pub async fn set_app_settings(
         open_codex_after_switch: settings.open_codex_after_switch,
         launch_at_login: settings.launch_at_login,
         start_minimized: settings.start_minimized,
+        continue_interrupted_goals: settings.continue_interrupted_goals,
     })
 }

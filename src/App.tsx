@@ -300,6 +300,7 @@ function App() {
   const [openCodexAfterSwitch, setOpenCodexAfterSwitch] = useState(false);
   const [launchAtLogin, setLaunchAtLogin] = useState(false);
   const [startMinimized, setStartMinimized] = useState(false);
+  const [continueInterruptedGoals, setContinueInterruptedGoals] = useState(true);
   const [dockDisplayMode, setDockDisplayMode] = useState<DockDisplayMode | null>(null);
   const [savingDockDisplayMode, setSavingDockDisplayMode] = useState(false);
 
@@ -506,12 +507,13 @@ function App() {
   // Load app settings on mount — handlers are defined after showWarmupToast/formatWarmupError below
   useEffect(() => {
     if (!isTauriRuntime()) return;
-    invokeBackend<{ openCodexAfterSwitch: boolean; launchAtLogin: boolean; startMinimized: boolean }>(
+    invokeBackend<{ openCodexAfterSwitch: boolean; launchAtLogin: boolean; startMinimized: boolean; continueInterruptedGoals: boolean }>(
       "get_app_settings"
     ).then((s) => {
       setOpenCodexAfterSwitch(s.openCodexAfterSwitch);
       setLaunchAtLogin(s.launchAtLogin);
       setStartMinimized(s.startMinimized);
+      setContinueInterruptedGoals(s.continueInterruptedGoals);
     }).catch(() => {});
   }, []);
 
@@ -717,6 +719,17 @@ function App() {
       showWarmupToast(`Failed to save setting: ${formatWarmupError(err)}`, true);
     }
   }, [openCodexAfterSwitch, formatWarmupError, showWarmupToast]);
+
+  const handleToggleContinueInterruptedGoals = useCallback(async () => {
+    const next = !continueInterruptedGoals;
+    setContinueInterruptedGoals(next);
+    try {
+      await invokeBackend("set_app_settings", { continueInterruptedGoals: next });
+    } catch (err) {
+      setContinueInterruptedGoals(!next);
+      showWarmupToast(`Failed to save setting: ${formatWarmupError(err)}`, true);
+    }
+  }, [continueInterruptedGoals, formatWarmupError, showWarmupToast]);
 
   const handleToggleLaunchAtLogin = useCallback(async () => {
     const next = !launchAtLogin;
@@ -1898,6 +1911,15 @@ function App() {
                             type="checkbox"
                             checked={openCodexAfterSwitch}
                             onChange={() => void handleToggleOpenCodexAfterSwitch()}
+                            className="h-4 w-4 accent-gray-900 dark:accent-gray-100"
+                          />
+                        </label>
+                        <label className="flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm cursor-pointer hover:bg-gray-100 dark:hover:bg-neutral-900">
+                          <span className="dark:text-white">Continue running goals after switch</span>
+                          <input
+                            type="checkbox"
+                            checked={continueInterruptedGoals}
+                            onChange={() => void handleToggleContinueInterruptedGoals()}
                             className="h-4 w-4 accent-gray-900 dark:accent-gray-100"
                           />
                         </label>

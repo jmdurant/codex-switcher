@@ -64,10 +64,9 @@ Install the result with
 
 ## Continue interrupted Codex goals
 
-Version 0.2.0 adds the opt-in setting
-`aiAccountSwitcherResume.continueInterruptedGoals` (default `false`). Enable it in
-the editor's settings to continue a running goal after a successful profile
-switch. The switcher and this extension both need to be running.
+AI Account Switcher controls this behavior through **Continue running goals
+after switch** in its Settings menu. It is enabled by default. The desktop app
+and this extension both need to be running.
 
 ### Automatic session identification on Windows
 

@@ -113,7 +113,7 @@ function execution(command: string) {
 
 async function scenario(options: {
   launchMode?: string; expectedYolo?: boolean;
-  capturedStatus?: string; readyText?: string; phase?: string; disableBeforeReady?: boolean;
+  capturedStatus?: string; readyText?: string; phase?: string; disableBeforeReady?: boolean; disabledAtCapture?: boolean;
   beforeLaunch?: Record<string, unknown>; atReady?: Record<string, unknown>;
   expectContinuation?: boolean;
   autoDiscover?: boolean; recovered?: boolean;
@@ -128,7 +128,6 @@ async function scenario(options: {
   const newlines: boolean[] = [];
   const launches: string[][] = [];
   const messages: string[] = [];
-  let continuationEnabled = true;
   let status = options.capturedStatus ?? "active";
   let goalChanges: Record<string, unknown> = {};
   let goalCleared = false;
@@ -151,7 +150,7 @@ async function scenario(options: {
     env: { appName: "VS Code" }, Uri: { file: (value: string) => ({ fsPath: value }) },
     commands: { registerCommand() { return disposable; } },
     workspace: { workspaceFolders: [{ uri: { scheme: "file", fsPath: root } }],
-      getConfiguration: () => ({ get: (key: string) => key === "enabled" || key === "cleanupStaleGoalDialogs" || (key === "continueInterruptedGoals" && continuationEnabled) }),
+      getConfiguration: () => ({ get: (key: string) => key === "enabled" || key === "cleanupStaleGoalDialogs" }),
       onDidChangeConfiguration: (fn: any) => { events.config = fn; return disposable; },
     },
     window: { terminals: options.twoUnknown ? [terminal, secondTerminal] : [terminal], activeTerminal: terminal,
@@ -175,6 +174,10 @@ async function scenario(options: {
     getTestOwners: () => owners,
   });
   try {
+    if (options.disabledAtCapture) {
+      await fs.mkdir(path.join(root, ".codex-switcher"), { recursive: true });
+      await fs.writeFile(path.join(root, ".codex-switcher", "settings.json"), JSON.stringify({continue_interrupted_goals:false}));
+    }
     module.exports.activate({ subscriptions: [], extensionPath: root });
     const original = execution(((options.autoDiscover || options.twoUnknown) ? "codex" : `codex resume ${id}`) + (options.launchMode ? ` ${options.launchMode}` : ""));
     if (!options.recovered) events.start({ terminal, execution: original, shellIntegration: terminal.shellIntegration });
@@ -204,7 +207,7 @@ async function scenario(options: {
     events.end({ terminal, execution: original });
     owners = [];
     goalChanges = options.beforeLaunch ?? {};
-    if (options.disableBeforeReady) continuationEnabled = false;
+    if (options.disableBeforeReady) await fs.writeFile(path.join(root, ".codex-switcher", "settings.json"), JSON.stringify({continue_interrupted_goals:false}));
     await fs.writeFile(requestPath, JSON.stringify({ ...request, phase: options.phase ?? "ready", completedAtMs: Date.now() }));
     intervals.get(250)!();
     if (options.phase === "cancelled") {
@@ -238,7 +241,7 @@ async function scenario(options: {
         await until(() => sent.length === 1);
         assert.deepEqual(sent, ["\x1b"]);
         assert.deepEqual(newlines, [false]);
-      } else if (options.expectContinuation ?? (eligibleCapture && !options.disableBeforeReady)) {
+      } else if (options.expectContinuation ?? (eligibleCapture && !options.disableBeforeReady && !options.disabledAtCapture)) {
         await until(() => sent.length === 1);
         resumed!.push("Goal paused (/goal resume)");
         await new Promise(resolve => setTimeout(resolve, 20));
@@ -272,6 +275,7 @@ test("full bridge recognizes the specific paused-goal startup choice", () => sce
 test("full bridge confirms the numbered resume-goal startup choice", () => scenario({ readyText: "1. Resume goal\n2. Leave paused" }));
 test("a previously paused goal is reopened without automatic continuation", () => scenario({ capturedStatus: "paused" }));
 test("disabling continuation before ready preserves plain exact resume", () => scenario({ disableBeforeReady: true }));
+test("desktop setting disables goal capture and continuation", () => scenario({ disabledAtCapture: true }));
 test("a cancelled account switch never resumes a terminal", () => scenario({ phase: "cancelled" }));
 test("a quota-limited goal can continue after switching", () => scenario({ capturedStatus: "usageLimited" }));
 test("a goal active at capture continues when it becomes paused during the switch", () => scenario({ beforeLaunch: { status: "paused" } }));

@@ -8,6 +8,7 @@ import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCo
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
+import { GoalContinuationPreference } from "./goalPreference";
 import { RetryLedger, RetryPrompt, overloaded, retryDelay, goalKey } from "./capacityRetry";
 import { SESSION_ID, canContinueGoal, captureGoal, fingerprint, goalReadyAction, sessionIdFromStatus, type GoalCapture } from "./goal";
 
@@ -193,6 +194,7 @@ async function recordResumeOutcome(outcomeBase: string | undefined, state: strin
 const acknowledgedRequests = new Set<string>();
 const resumedResponses = new Set<string>();
 const codexReader = new CodexReader();
+const goalPreference = new GoalContinuationPreference(path.join(os.homedir(), ".codex-switcher", "settings.json"));
 interface PendingGoal { sessionId: string; goal: GoalCapture; expiresAt: number; checking: boolean; timer: NodeJS.Timeout }
 const pendingGoals = new Map<vscode.Terminal, PendingGoal>();
 const dialogCleaners = new Map<vscode.Terminal, GoalDialogCleanup>();
@@ -207,7 +209,7 @@ function clearDialogCleaner(terminal: vscode.Terminal): void {
 }
 
 function continueGoals(): boolean {
-  return enabled() && vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<boolean>("continueInterruptedGoals", true);
+  return enabled() && goalPreference.enabled();
 }
 
 async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T | undefined> {
@@ -467,6 +469,8 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
         if (activeExecutions.get(terminal) === active && active.sessionId === session.sessionId && continueGoals() && goal) session.goal = captureGoal(goal);
         output.appendLine(`Goal capture for ${session.sessionId}: ${session.goal ? `eligible ${session.goal.status}` : goal === undefined ? "unavailable" : goal === null ? "no goal" : `ineligible ${goal.status}`}.`);
       })());
+    } else if (active.tool === "codex" && active.sessionId) {
+      output.appendLine(`Goal capture disabled by desktop setting for ${active.sessionId}.`);
     }
   }
   await Promise.all(reads); // Bounded below the switcher's 1.5 second prepare timeout.
@@ -810,7 +814,7 @@ export function activate(context: vscode.ExtensionContext): void {
   discoveryTimer = setInterval(() => void refreshDiscovery(), 5000);
   retryTimer = setInterval(() => void pollCapacityRetries(), 7000);
   pollTimer = setInterval(() => void pollBridge().catch(error => output.appendLine(`Bridge check failed: ${String(error)}`)), POLL_INTERVAL_MS);
-  output.appendLine(`Bridge active for ${ideKind} as ${clientId}.`);
+  output.appendLine(`Bridge active for ${ideKind} as ${clientId}; desktop goal continuation ${continueGoals() ? "on" : "off"}.`);
 }
 
 export async function deactivate(): Promise<void> {

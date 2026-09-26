@@ -52,6 +52,10 @@ fn default_start_minimized() -> bool {
     false
 }
 
+fn default_continue_interrupted_goals() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -68,6 +72,9 @@ pub struct AppSettings {
     /// When true, the main window is hidden on startup (runs silently in tray).
     #[serde(default = "default_start_minimized")]
     pub start_minimized: bool,
+    /// Let companion IDE extensions continue a goal that was running before a switch.
+    #[serde(default = "default_continue_interrupted_goals")]
+    pub continue_interrupted_goals: bool,
 }
 
 impl Default for AppSettings {
@@ -79,6 +86,7 @@ impl Default for AppSettings {
             open_codex_after_switch: false,
             launch_at_login: false,
             start_minimized: false,
+            continue_interrupted_goals: true,
         }
     }
 }
@@ -554,5 +562,7 @@ mod tests {
         assert_eq!(settings.tray_display_mode, TrayDisplayMode::ActiveUsageText);
         assert_eq!(settings.dock_display_mode, DockDisplayMode::ShowInDock);
         assert!(settings.close_behavior_prompt_enabled);
+        assert!(settings.continue_interrupted_goals);
+        assert_eq!(serde_json::to_value(&settings).unwrap()["continue_interrupted_goals"], true);
     }
 }
