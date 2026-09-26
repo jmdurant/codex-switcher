@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyCommand, resumeInvocation, yoloFromCommand } from "../src/session.ts";
+import { classifyCommand, isLastResumeCommand, resumeInvocation, yoloFromCommand } from "../src/session.ts";
 
 test("recognizes Codex and agy commands launched from common Windows shells", () => {
   assert.equal(classifyCommand("codex"), "codex");
@@ -29,6 +29,12 @@ test("resume commands are fixed and do not contain captured shell text", () => {
     args: ["--continue"],
     commandLine: "agy --continue",
   });
+});
+test("last-resume commands are identified for Linux session binding", () => {
+  assert.equal(isLastResumeCommand("codex resume --last --yolo"), true);
+  assert.equal(isLastResumeCommand("codex resume"), true);
+  assert.equal(isLastResumeCommand("codex resume 01991234-1234-7123-8123-123456789abc"), false);
+  assert.equal(isLastResumeCommand("agy --continue"), false);
 });
 
 test("captures YOLO aliases and explicit guarded launches without reading prompt text", () => {

@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { classifyCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, type ResumeTool } from "./session";
+import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, type ResumeTool } from "./session";
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
@@ -34,6 +34,7 @@ interface CapturedSession {
   terminalName: string;
   terminalProcessId?: number;
   sessionId?: string;
+  resumeLast?: boolean;
   goal?: GoalCapture;
 }
 
@@ -61,6 +62,7 @@ interface ClientHeartbeat {
 
 interface ActiveExecution {
   yolo?: boolean;
+  resumeLast?: boolean;
   execution?: vscode.TerminalShellExecution;
   tool: ResumeTool;
   cwd: string;
@@ -422,6 +424,14 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
       sessionId: active.sessionId,
       yolo: active.yolo,
     };
+    if (active.tool === "codex" && active.resumeLast && !session.sessionId) {
+      const resolved = await within(codexReader.recentInteractiveSession(active.cwd), 700);
+      if (resolved && activeExecutions.get(terminal) === active) {
+        active.sessionId = resolved;
+        session.sessionId = resolved;
+        output.appendLine(`Resolved codex resume --last to recent session ${resolved}.`);
+      }
+    }
     sessions.push(session);
     if (active.tool === "codex" && active.sessionId && continueGoals()) {
       reads.push((async () => {
@@ -691,6 +701,7 @@ export function activate(context: vscode.ExtensionContext): void {
         cwd,
         retryPrompt: tool === "codex" ? new RetryPrompt() : undefined,
         yolo: yoloFromCommand(event.execution.commandLine.value),
+        resumeLast: isLastResumeCommand(event.execution.commandLine.value),
         sessionId: tool === "codex" ? sessionIdFromCommand(event.execution.commandLine.value) : undefined,
       };
       activeExecutions.set(event.terminal, active);

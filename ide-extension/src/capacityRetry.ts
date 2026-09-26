@@ -3,9 +3,12 @@ import * as path from "node:path";
 import { cleanTerminalText, fingerprint, SESSION_ID, type Goal } from "./goal.ts";
 import { isNonVisualUpdate } from "./goalDialogCleanup.ts";
 
-export interface RetryTurn { id: string; status: string; error?: { codexErrorInfo?: unknown }; completedAt?: number }
+export interface RetryTurn { id: string; status: string; error?: { codexErrorInfo?: unknown; message?: unknown }; completedAt?: number }
 export function overloaded(turn: RetryTurn | null): turn is RetryTurn {
-  return turn?.status === "failed" && turn.error?.codexErrorInfo === "serverOverloaded";
+  if (turn?.status !== "failed") return false;
+  const code = turn.error?.codexErrorInfo;
+  const message = typeof turn.error?.message === "string" ? turn.error.message : "";
+  return code === "serverOverloaded" || code === "server_overloaded" || /selected model is at capacity/i.test(message);
 }
 export function retryDelay(attempt: number, random = Math.random()): number {
   return [30, 60, 120, 240, 300][Math.min(attempt, 4)]! * 1000 + Math.floor(random * 5000);

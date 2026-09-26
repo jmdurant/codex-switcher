@@ -9,8 +9,10 @@ const id = "01a0537e-b2f9-7b71-9520-8db14bf0a76f";
 const turn = "01a053b5-c94d-7ce3-8c32-ff2ea32a51cc";
 test("only completed failures with the observed structured capacity code qualify", () => {
   assert.equal(overloaded({id:turn,status:"failed",error:{codexErrorInfo:"serverOverloaded"}}),true);
-  for (const code of ["usageLimitExceeded","unauthorized","internalServerError","server_overloaded",undefined])
+  for (const code of ["usageLimitExceeded","unauthorized","internalServerError",undefined])
     assert.equal(overloaded({id:turn,status:"failed",error:{codexErrorInfo:code}}),false);
+  assert.equal(overloaded({id:turn,status:"failed",error:{codexErrorInfo:"server_overloaded"}}),true);
+  assert.equal(overloaded({id:turn,status:"failed",error:{message:"Selected model is at capacity. Please try a different model."}}),true);
   assert.equal(overloaded({id:turn,status:"inProgress",error:{codexErrorInfo:"serverOverloaded"}}),false);
   assert.equal(overloaded(null),false);
 });

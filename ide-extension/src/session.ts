@@ -35,6 +35,12 @@ export function sessionIdFromCommand(commandLine: string): string | undefined {
   return id && UUID.test(id) ? id.toLowerCase() : undefined;
 }
 
+export function isLastResumeCommand(commandLine: string): boolean {
+  if (classifyCommand(commandLine) !== "codex") return false;
+  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  return tokens[1] === "resume" && (tokens[2] === "--last" || tokens[2] === undefined);
+}
+
 /** Only inspect launch options, never flag-looking text in a prompt or option value. */
 export function yoloFromCommand(commandLine: string): boolean | undefined {
   if (classifyCommand(commandLine) !== "codex") return undefined;
