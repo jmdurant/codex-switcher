@@ -47,6 +47,7 @@ test("status detection requires an explicit session label", () => {
 });
 test("readiness recognizes the specific goal UI, not generic startup or approval prompts", () => {
   assert.equal(goalReadyAction("Resume paused goal?\nMark it active and continue when idle"), "confirm");
+  assert.equal(goalReadyAction("1. Resume goal\n2. Leave paused"), "confirm");
   assert.equal(goalReadyAction("Goal paused (/goal resume)"), "resume");
   assert.equal(goalReadyAction("Goal hit usage limits (/goal resume)"), "resume");
   assert.equal(goalReadyAction("Pursuing goal"), "running");

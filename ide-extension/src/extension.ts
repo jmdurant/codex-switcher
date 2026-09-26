@@ -207,7 +207,7 @@ function clearDialogCleaner(terminal: vscode.Terminal): void {
 }
 
 function continueGoals(): boolean {
-  return enabled() && vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<boolean>("continueInterruptedGoals", false);
+  return enabled() && vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<boolean>("continueInterruptedGoals", true);
 }
 
 async function within<T>(promise: Promise<T>, milliseconds: number): Promise<T | undefined> {
@@ -465,6 +465,7 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
       reads.push((async () => {
         const goal = await within(codexReader.readGoal(active.sessionId!, active.cwd), 700);
         if (activeExecutions.get(terminal) === active && active.sessionId === session.sessionId && continueGoals() && goal) session.goal = captureGoal(goal);
+        output.appendLine(`Goal capture for ${session.sessionId}: ${session.goal ? `eligible ${session.goal.status}` : goal === undefined ? "unavailable" : goal === null ? "no goal" : `ineligible ${goal.status}`}.`);
       })());
     }
   }
@@ -594,8 +595,7 @@ async function resumeSession(session: CapturedSession, outcomeBase?: string): Pr
   await waitUntilIdle(terminal);
   if (session.tool === "codex" && session.sessionId && session.goal && continueGoals()) {
     const goal = await within(codexReader.readGoal(session.sessionId, session.cwd), 4000);
-    // A goal paused before relaunch is a deliberate stop, not a TUI resume prompt.
-    if (goal && goal.status !== "paused" && canContinueGoal(session.goal, goal)) {
+    if (goal !== undefined && canContinueGoal(session.goal, goal)) {
       clearPendingGoal(terminal);
       const target = terminal;
       const timer = setTimeout(() => {

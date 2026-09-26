@@ -2,7 +2,7 @@
   "name": "ai-account-switcher-resume",
   "displayName": "AI Account Switcher Resume",
   "description": "Resumes Codex and agy integrated-terminal sessions after AI Account Switcher changes profiles.",
-  "version": "0.2.13",
+  "version": "0.2.14",
   "publisher": "jmdurant",
   "private": true,
   "engines": {
@@ -43,7 +43,7 @@
         },
         "aiAccountSwitcherResume.continueInterruptedGoals": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "scope": "window",
           "description": "After a profile switch, continue an exact linked Codex session only if its goal was active or usage-limited before capture. Never changes goal budgets. Requires a CLI with goal support; unknown sessions must be linked using the command palette."
         }

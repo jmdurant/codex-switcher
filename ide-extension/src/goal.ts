@@ -52,6 +52,7 @@ export type GoalReadyAction = "confirm" | "resume" | "running";
 export function goalReadyAction(text: string): GoalReadyAction | undefined {
   const clean = cleanTerminalText(text);
   if (clean.includes("Resume paused goal?") && clean.includes("Mark it active and continue when idle")) return "confirm";
+  if (/1[.)]\s*Resume goal\b/i.test(clean) && /2[.)]\s*Leave paused\b/i.test(clean)) return "confirm";
   if (/Goal (?:paused|hit usage limits)\s*\(\/goal resume\)/.test(clean)) return "resume";
   if (clean.includes("Pursuing goal")) return "running";
   return undefined;

@@ -242,7 +242,7 @@ async function scenario(options: {
         await until(() => sent.length === 1);
         resumed!.push("Goal paused (/goal resume)");
         await new Promise(resolve => setTimeout(resolve, 20));
-        assert.deepEqual(sent, [options.readyText?.includes("Resume paused goal?") ? "" : "/goal resume"]);
+        assert.deepEqual(sent, [options.readyText?.includes("Resume paused goal?") || options.readyText?.includes("1. Resume goal") ? "" : "/goal resume"]);
       } else {
         await new Promise(resolve => setTimeout(resolve, 20));
         assert.equal(sent.length, 0);
@@ -269,11 +269,12 @@ test("bridge preserves explicit YOLO mode", () => scenario({launchMode:"--yolo"}
 test("bridge preserves the long YOLO alias", () => scenario({launchMode:"--dangerously-bypass-approvals-and-sandbox"}));
 test("bridge suppresses YOLO for an explicitly guarded launch", () => scenario({launchMode:"--sandbox workspace-write",expectedYolo:false}));
 test("full bridge recognizes the specific paused-goal startup choice", () => scenario({ readyText: "Resume paused goal?\nMark it active and continue when idle" }));
+test("full bridge confirms the numbered resume-goal startup choice", () => scenario({ readyText: "1. Resume goal\n2. Leave paused" }));
 test("a previously paused goal is reopened without automatic continuation", () => scenario({ capturedStatus: "paused" }));
 test("disabling continuation before ready preserves plain exact resume", () => scenario({ disableBeforeReady: true }));
 test("a cancelled account switch never resumes a terminal", () => scenario({ phase: "cancelled" }));
 test("a quota-limited goal can continue after switching", () => scenario({ capturedStatus: "usageLimited" }));
-test("a goal deliberately paused during the switch stays paused", () => scenario({ beforeLaunch: { status: "paused" }, expectContinuation: false }));
+test("a goal active at capture continues when it becomes paused during the switch", () => scenario({ beforeLaunch: { status: "paused" } }));
 test("a replaced goal at readiness is not continued", () => scenario({ atReady: { objective: "Different task" }, expectContinuation: false }));
 test("a changed budget at readiness prevents continuation", () => scenario({ atReady: { tokenBudget: 20000 }, expectContinuation: false }));
 test("an exhausted goal budget at readiness prevents continuation", () => scenario({ atReady: { tokensUsed: 10000 }, expectContinuation: false }));
