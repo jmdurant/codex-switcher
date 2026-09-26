@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyCommand, isLastResumeCommand, resumeInvocation, yoloFromCommand } from "../src/session.ts";
+import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand } from "../src/session.ts";
 
 test("recognizes Codex and agy commands launched from common Windows shells", () => {
   assert.equal(classifyCommand("codex"), "codex");
@@ -35,6 +35,15 @@ test("last-resume commands are identified for Linux session binding", () => {
   assert.equal(isLastResumeCommand("codex resume"), true);
   assert.equal(isLastResumeCommand("codex resume 01991234-1234-7123-8123-123456789abc"), false);
   assert.equal(isLastResumeCommand("agy --continue"), false);
+  assert.equal(isLastResumeCommand("codex --no-daemon resume --last --yolo"), true);
+  assert.equal(sessionIdFromCommand("codex --no-daemon resume 01991234-1234-7123-8123-123456789abc --yolo"), "01991234-1234-7123-8123-123456789abc");
+});
+
+test("Linux resume bypasses the shared daemon's cached account", () => {
+  const invocation = resumeInvocation("codex", undefined, true, true);
+  assert.deepEqual(invocation.args, ["--no-daemon", "resume", "--last", "--yolo"]);
+  assert.equal(invocation.commandLine, "codex --no-daemon resume --last --yolo");
+  assert.equal(yoloFromCommand(invocation.commandLine), true);
 });
 
 test("captures YOLO aliases and explicit guarded launches without reading prompt text", () => {

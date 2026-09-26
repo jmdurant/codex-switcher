@@ -26,9 +26,15 @@ export function classifyCommand(commandLine: string): ResumeTool | undefined {
 }
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
+function commandTokens(commandLine: string): string[] {
+  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  // `--no-daemon` is a global Codex flag placed before `resume` on Linux.
+  if (tokens[1] === "--no-daemon") tokens.splice(1, 1);
+  return tokens;
+}
 export function sessionIdFromCommand(commandLine: string): string | undefined {
   if (classifyCommand(commandLine) !== "codex") return undefined;
-  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  const tokens = commandTokens(commandLine);
   if (tokens.some(token => token === "--remote" || token.startsWith("--remote="))) return undefined;
   if (tokens[1] !== "resume") return undefined;
   const id = tokens[2]?.replace(/^['"]|['"]$/g, "");
@@ -37,14 +43,14 @@ export function sessionIdFromCommand(commandLine: string): string | undefined {
 
 export function isLastResumeCommand(commandLine: string): boolean {
   if (classifyCommand(commandLine) !== "codex") return false;
-  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  const tokens = commandTokens(commandLine);
   return tokens[1] === "resume" && (tokens[2] === "--last" || tokens[2] === undefined);
 }
 
 /** Only inspect launch options, never flag-looking text in a prompt or option value. */
 export function yoloFromCommand(commandLine: string): boolean | undefined {
   if (classifyCommand(commandLine) !== "codex") return undefined;
-  const tokens = commandLine.trim().replace(/^&\s+/, "").match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? [];
+  const tokens = commandTokens(commandLine);
   let mode: boolean | undefined;
   let resume = false;
   let session = false;
@@ -68,13 +74,13 @@ export function yoloFromCommand(commandLine: string): boolean | undefined {
   return mode;
 }
 
-export function resumeInvocation(tool: ResumeTool, sessionId?: string, yolo?: boolean): ResumeInvocation {
+export function resumeInvocation(tool: ResumeTool, sessionId?: string, yolo?: boolean, noDaemon = false): ResumeInvocation {
   if (sessionId !== undefined && !UUID.test(sessionId)) throw new Error("Invalid Codex session ID.");
   return tool === "codex"
     ? {
         executable: "codex",
-        args: ["resume", sessionId ?? "--last", ...(yolo === false ? [] : ["--yolo"])],
-        commandLine: `codex resume ${sessionId ?? "--last"}${yolo === false ? "" : " --yolo"}`,
+        args: [...(noDaemon ? ["--no-daemon"] : []), "resume", sessionId ?? "--last", ...(yolo === false ? [] : ["--yolo"])],
+        commandLine: `codex${noDaemon ? " --no-daemon" : ""} resume ${sessionId ?? "--last"}${yolo === false ? "" : " --yolo"}`,
       }
     : {
         executable: "agy",

@@ -35,10 +35,25 @@ pub fn sync_active_account_tokens(store: &mut AccountsStore, auth: &AuthDotJson)
         return false;
     };
 
-    let stored_account_id = parse_chatgpt_id_token_claims(id_token)
+    let stored_claims = parse_chatgpt_id_token_claims(id_token);
+    let current_claims = parse_chatgpt_id_token_claims(&tokens.id_token);
+    let stored_email = stored_claims.email.as_deref().or(account.email.as_deref());
+    let current_email = current_claims.email.as_deref();
+    // Several people can belong to the same ChatGPT Team workspace. Matching
+    // its account ID alone can save one person's refreshed tokens under another
+    // person's active card, making the displayed account disagree with Codex.
+    if (stored_email.is_some() || current_email.is_some())
+        && !stored_email
+            .zip(current_email)
+            .is_some_and(|(stored, current)| stored.eq_ignore_ascii_case(current))
+    {
+        return false;
+    }
+
+    let stored_account_id = stored_claims
         .account_id
         .or_else(|| account_id.clone());
-    let current_account_id = parse_chatgpt_id_token_claims(&tokens.id_token)
+    let current_account_id = current_claims
         .account_id
         .or_else(|| tokens.account_id.clone());
     let (Some(stored_account_id), Some(current_account_id)) =
@@ -524,6 +539,42 @@ mod tests {
             format!(r#"{{"https://api.openai.com/auth":{{"chatgpt_account_id":"{account_id}"}}}}"#);
         let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
         format!("header.{encoded}.{suffix}")
+    }
+
+    fn id_token_with_identity(account_id: &str, email: &str, suffix: &str) -> String {
+        let payload = serde_json::json!({
+            "email": email,
+            "https://api.openai.com/auth": { "chatgpt_account_id": account_id }
+        });
+        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&payload).unwrap());
+        format!("header.{encoded}.{suffix}")
+    }
+
+    #[test]
+    fn does_not_copy_another_persons_tokens_from_the_same_team_workspace() {
+        let mut active = account("A", "shared-team", "old");
+        active.email = Some("person@example.com".into());
+        if let AuthData::ChatGPT { id_token, .. } = &mut active.auth_data {
+            *id_token = id_token_with_identity("shared-team", "person@example.com", "old");
+        }
+        let mut store = AccountsStore {
+            active_account_id: Some(active.id.clone()),
+            accounts: vec![active],
+            ..AccountsStore::default()
+        };
+
+        let mut other_person = auth("shared-team", "new");
+        other_person.tokens.as_mut().unwrap().id_token =
+            id_token_with_identity("shared-team", "other@example.com", "new");
+        assert!(!sync_active_account_tokens(&mut store, &other_person));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-old");
+
+        let mut rotated = auth("shared-team", "rotated");
+        rotated.tokens.as_mut().unwrap().id_token =
+            id_token_with_identity("shared-team", "PERSON@example.com", "rotated");
+        assert!(sync_active_account_tokens(&mut store, &rotated));
+        assert_eq!(refresh_token(&store.accounts[0]), "refresh-rotated");
     }
 
     #[test]

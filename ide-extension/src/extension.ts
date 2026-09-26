@@ -526,7 +526,9 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
     cleanupLaunches.set(terminal, { sessionId: session.sessionId, fingerprint: before ? fingerprint(before) : undefined });
   }
   terminal.show(false);
-  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo);
+  // The shared Codex daemon can retain a previous login after auth.json is
+  // switched. Linux resumes must read the newly selected credentials instead.
+  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo, process.platform === "linux");
   resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now(), outcomeBase });
   await recordResumeOutcome(outcomeBase, "dispatched");
   if (terminal.shellIntegration) {
