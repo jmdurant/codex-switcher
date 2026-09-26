@@ -533,6 +533,14 @@ async function resumeSession(session: CapturedSession, outcomeBase?: string): Pr
     throw new Error("Exact Codex session is unknown. Use Link Codex Session in the command palette; automatic goal continuation never uses --last.");
   }
   let terminal = await terminalByProcessId(session.terminalProcessId);
+  // A forcibly stopped TUI can leave mouse-reporting and alternate-screen
+  // modes enabled on its PTY. Reusing that terminal makes the shell print
+  // fragments such as `35;53;7M` instead of starting a clean Codex TUI.
+  // Dispose the captured terminal and resume in a fresh integrated terminal.
+  if (terminal && typeof terminal.dispose === "function" && typeof vscode.window.createTerminal === "function") {
+    try { terminal.dispose(); } catch { /* the shell may already be gone */ }
+    terminal = undefined;
+  }
   const shellCwd = terminal?.shellIntegration?.cwd?.fsPath;
   if (shellCwd && path.normalize(shellCwd) !== path.normalize(session.cwd)) terminal = undefined;
   if (!terminal) {
