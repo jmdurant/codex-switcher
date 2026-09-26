@@ -237,7 +237,7 @@ pub(crate) async fn coordinated_switch(
     require_capture: bool,
     reopen_ide: bool,
 ) -> Result<SwitchResumeResult, String> {
-    use super::{check_codex_processes, complete_ide_resume_internal, kill_codex_processes, prepare_ide_resume};
+    use super::{check_codex_processes, complete_ide_resume_internal, prepare_ide_resume};
     let store = load_accounts().map_err(|e| e.to_string())?;
     if expected_active.is_some() && store.active_account_id.as_deref() != expected_active {
         return Err("Active account changed since the request; refresh quota options.".into());
@@ -255,16 +255,16 @@ pub(crate) async fn coordinated_switch(
     let result = async {
         if !running.can_switch {
             if require_capture { crate::mcp::check_switch_policy(account_id,true)?; }
-            let killed = if require_capture {
-                let id = preparation.as_ref().and_then(|p|p.request_id.as_deref()).ok_or("Missing resume capture")?;
-                let terminals = super::ide_bridge::captured_terminal_pids(id).map_err(|e|e.to_string())?;
-                super::process::kill_captured_codex_processes(terminals).await?
-            } else { kill_codex_processes().await? };
+            let id = preparation.as_ref().and_then(|p|p.request_id.as_deref()).ok_or("Missing resume capture")?;
+            let terminals = super::ide_bridge::captured_terminal_pids(id).map_err(|e|e.to_string())?;
+            let killed = super::process::kill_captured_codex_processes(terminals).await?;
             if !killed.failed_pids.is_empty() { return Err("Some Codex processes could not be stopped".into()); }
+            let mut stopped = false;
             for _ in 0..20 {
-                if check_codex_processes().await?.can_switch { break; }
+                if check_codex_processes().await?.can_switch { stopped = true; break; }
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
+            if !stopped { return Err("Codex is still running after the close attempt; account was not changed".into()); }
         }
         // Check again, rather than force past a process started during preparation.
         if require_capture { crate::mcp::check_switch_policy(account_id,false)?; }
