@@ -37,6 +37,14 @@ test("fresh scanner skips failed candidates and verifies both accounts twice", a
   assert.equal(calls.filter(id => id === "active").length, 2);
   assert.equal(calls.filter(id => id === "best").length, 2);
 });
+test("trace records why an exhausted active account has no verified fallback", async () => {
+  const events: string[] = [];
+  const inputs = { ...source([account("active", 0), account("empty", 0)]), trace: (event: string) => events.push(event) };
+  assert.equal(await findAutoQuotaSwitch(inputs, excluded), undefined);
+  assert.ok(events.includes("active_quota"));
+  assert.ok(events.includes("candidate_quotas"));
+  assert.ok(events.includes("no_eligible_candidate"));
+});
 test("a recovered active account cancels the planned switch", async () => {
   const inputs = source([account("active", 0), account("best", 50)]);
   let reads = 0;

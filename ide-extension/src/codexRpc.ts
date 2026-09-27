@@ -111,18 +111,28 @@ export class CodexReader {
   /** Resolve a recent root CLI thread for a `codex resume --last` terminal.
    * The cwd filter and short recency window avoid binding an unrelated old
    * conversation when Linux has no native process-owner discovery. */
-  async recentInteractiveSession(cwd: string): Promise<string | undefined> {
+  async recentInteractiveSession(cwd: string, report?: (reason: string, detail: Record<string, number>) => void): Promise<string | undefined> {
     await this.connect();
     const result = await this.request("thread/list", { cwd });
-    if (!Array.isArray(result?.data)) return undefined;
+    if (!Array.isArray(result?.data)) {
+      report?.("invalid_thread_list", {});
+      return undefined;
+    }
     const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
     const wanted = normalize(cwd);
     const now = Math.floor(Date.now() / 1000);
-    const candidates = result.data.filter((thread: any) =>
+    const matching = result.data.filter((thread: any) =>
       thread && SESSION_ID.test(thread.id) && thread.source === "cli" && thread.parentThreadId === null &&
-      typeof thread.cwd === "string" && normalize(thread.cwd) === wanted &&
+      typeof thread.cwd === "string" && normalize(thread.cwd) === wanted);
+    const candidates = matching.filter((thread: any) =>
       Number.isFinite(thread.updatedAt) && now - thread.updatedAt >= -5 && now - thread.updatedAt <= 30 * 60,
     );
+    report?.(candidates.length ? "candidate_found" : matching.length ? "outside_30_minute_window" : "no_matching_cli_thread", {
+      listed: result.data.length,
+      matching: matching.length,
+      eligible: candidates.length,
+      newestAgeSeconds: matching.length ? Math.min(...matching.map((thread: any) => Number.isFinite(thread.updatedAt) ? now - thread.updatedAt : Number.POSITIVE_INFINITY)) : -1,
+    });
     if (candidates.length === 0) return undefined;
     candidates.sort((left: any, right: any) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
     return candidates[0].id.toLowerCase();

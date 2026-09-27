@@ -454,12 +454,28 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
       sessionId: active.sessionId,
       yolo: active.yolo,
     };
-    if (active.tool === "codex" && active.resumeLast && !session.sessionId) {
-      const resolved = await within(codexReader.recentInteractiveSession(active.cwd), 700);
-      if (resolved && activeExecutions.get(terminal) === active) {
-        active.sessionId = resolved;
-        session.sessionId = resolved;
-        output.appendLine(`Resolved codex resume --last to recent session ${resolved}.`);
+    if (active.tool === "codex" && !session.sessionId) {
+      const label = `Session lookup for request ${request.requestId}, terminal ${active.terminalProcessId ?? "unknown"}`;
+      if (!active.resumeLast) {
+        output.appendLine(`${label}: not attempted; command was not recognized as codex resume --last.`);
+      } else {
+        const started = Date.now();
+        let timer: NodeJS.Timeout | undefined;
+        const lookup = codexReader.recentInteractiveSession(active.cwd, (reason, detail) =>
+          output.appendLine(`${label}: ${reason} ${JSON.stringify(detail)}.`))
+          .then(id => ({ kind: "finished" as const, id }), error => ({ kind: "error" as const, error: String(error) }));
+        const outcome = await Promise.race([
+          lookup,
+          new Promise<{ kind: "timeout" }>(resolve => { timer = setTimeout(() => resolve({ kind: "timeout" }), 700); }),
+        ]);
+        if (timer) clearTimeout(timer);
+        output.appendLine(`${label}: ${outcome.kind}${outcome.kind === "error" ? ` ${outcome.error}` : ""} after ${Date.now() - started} ms.`);
+        const resolved = outcome.kind === "finished" ? outcome.id : undefined;
+        if (resolved && activeExecutions.get(terminal) === active) {
+          active.sessionId = resolved;
+          session.sessionId = resolved;
+          output.appendLine(`Resolved codex resume --last to recent session ${resolved}.`);
+        }
       }
     }
     sessions.push(session);

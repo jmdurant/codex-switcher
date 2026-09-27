@@ -789,6 +789,9 @@ function App() {
     enabled: autoQuotaEnabled,
     policy: autoQuotaPolicy,
     busy: switchingId !== null || isForceClosingCodex || forceCloseConfirmOpen || loading || staggerRunning,
+    busyReason: switchingId !== null ? "switch_in_progress" : isForceClosingCodex ? "closing_codex" :
+      forceCloseConfirmOpen ? "close_confirmation_open" : loading ? "loading_accounts" :
+      staggerRunning ? "staggered_warmup" : undefined,
     accounts,
     onSwitch: async (accountId, cancelled) => {
       const processes = await checkProcesses();

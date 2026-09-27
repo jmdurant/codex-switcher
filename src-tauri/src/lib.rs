@@ -19,7 +19,7 @@ use commands::{
     get_account_usage_stats, get_active_account_info, get_antigravity_usage, get_app_settings,
     get_dock_display_mode, get_masked_account_ids, get_usage, hide_tray_window,
     import_accounts_full_encrypted_file, import_accounts_slim_text, kill_antigravity_processes,
-    kill_codex_processes, list_accounts, list_antigravity_accounts, open_main_window,
+    kill_codex_processes, list_accounts, list_antigravity_accounts, log_auto_quota_event, open_main_window,
     prepare_ide_resume, quit_app, refresh_account_metadata, refresh_all_accounts_usage,
     rename_account, report_usage, set_app_settings, set_dock_display_mode, set_masked_account_ids,
     start_login, start_relogin, switch_account, switch_antigravity_account, warmup_account,
@@ -116,6 +116,7 @@ pub fn run() {
             cancel_login,
             // Usage
             get_usage,
+            log_auto_quota_event,
             get_account_usage_stats,
             refresh_account_metadata,
             refresh_all_accounts_usage,

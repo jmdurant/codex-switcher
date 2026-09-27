@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { AccountWithUsage, UsageInfo } from "../types";
-import { invokeBackend } from "../lib/platform";
+import { invokeBackend, isTauriRuntime } from "../lib/platform";
 import { findAutoQuotaSwitch } from "../lib/autoQuotaSwitch";
 import type { AutoQuotaPolicy } from "../lib/quotaOptions";
 
@@ -8,6 +8,7 @@ interface Options {
   enabled: boolean;
   policy: AutoQuotaPolicy;
   busy: boolean;
+  busyReason?: string;
   accounts: AccountWithUsage[];
   onSwitch: (id: string, cancelled: () => boolean) => Promise<boolean>;
   onError: (message: string) => void;
@@ -22,14 +23,23 @@ export function useAutoQuotaSwitch(options: Options) {
   const [switching, setSwitching] = useState(false);
   const [status, setStatus] = useState("Waiting for the next quota check.");
   useEffect(() => {
-    if (!options.enabled) return;
+    const trace = (event: string, detail: Record<string, unknown> = {}) => {
+      if (!isTauriRuntime()) return;
+      void invokeBackend<void>("log_auto_quota_event", { event, detail }).catch(error =>
+        console.warn("Auto-quota trace write failed:", error));
+    };
+    if (!options.enabled) { trace("disabled"); return; }
     let stopped = false;
     const tick = async () => {
-      if (stopped || running.current || latest.current.busy || Date.now() < retryAfter.current) return;
+      if (stopped) return;
+      if (running.current) { trace("check_skipped", { reason: "already_running" }); return; }
+      if (latest.current.busy) { trace("check_skipped", { reason: "app_busy", busyReason: latest.current.busyReason }); return; }
+      if (Date.now() < retryAfter.current) { trace("check_skipped", { reason: "cooldown", retryAfter: retryAfter.current }); return; }
       running.current = true;
       const activeId = latest.current.accounts.find(a => a.is_active)?.id;
       const cancelled = () => stopped || !latest.current.enabled || latest.current.busy || latest.current.accounts.find(a => a.is_active)?.id !== activeId;
       try {
+        trace("check_started", { activeId, policy: options.policy });
         setStatus("Checking quota…");
         const now = Date.now();
         for (const [id, expiry] of recent.current) if (expiry <= now) recent.current.delete(id);
@@ -38,22 +48,32 @@ export function useAutoQuotaSwitch(options: Options) {
           getUsage: (accountId) => invokeBackend<UsageInfo>("get_usage", { accountId }),
           now: Date.now,
           cancelled,
+          trace,
         }, new Set(recent.current.keys()), options.policy);
-        if (cancelled()) return;
+        if (cancelled()) {
+          trace("check_cancelled", { activeId, stopped, enabled: latest.current.enabled, busy: latest.current.busy,
+            busyReason: latest.current.busyReason,
+            currentActiveId: latest.current.accounts.find(a => a.is_active)?.id });
+          return;
+        }
         if (!decision) {
+          trace("check_finished_without_switch", { activeId });
           setStatus("No switch needed or no suitable verified alternative. Checking every 30 seconds.");
           return;
         }
         // Back off even on failure, so a failed close/switch never becomes a loop.
         retryAfter.current = Date.now() + 60000;
         setSwitching(true);
+        trace("switch_started", { activeId: decision.from.id, targetId: decision.to.id, reason: decision.reason });
         setStatus(decision.reason === "expiring_five_hour" ? "Switching to use five-hour quota before it resets…" : "Switching to the best verified alternative…");
         const switched = await latest.current.onSwitch(decision.to.id, cancelled);
+        trace("switch_finished", { activeId: decision.from.id, targetId: decision.to.id, switched });
         if (switched) {
           recent.current.set(decision.from.id, Date.now() + 5 * 60000);
           setStatus(decision.reason === "expiring_five_hour" ? "Using expiring five-hour quota until a limit exhausts or the window resets." : "Switched successfully. Cooling down for one minute.");
         } else setStatus("Switch could not complete. Will retry after one minute.");
       } catch (error) {
+        trace("check_failed", { activeId, error: error instanceof Error ? error.message : String(error) });
         retryAfter.current = Date.now() + 60000;
         if (!stopped) {
           setStatus("Quota check failed. Will retry after one minute.");
