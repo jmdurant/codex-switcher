@@ -10,7 +10,7 @@ interface Options {
   busy: boolean;
   busyReason?: string;
   accounts: AccountWithUsage[];
-  onSwitch: (id: string, cancelled: () => boolean) => Promise<boolean>;
+  onSwitch: (id: string, cancelled: () => boolean, trace: (event: string, detail?: Record<string, unknown>) => void) => Promise<boolean>;
   onError: (message: string) => void;
 }
 
@@ -66,7 +66,7 @@ export function useAutoQuotaSwitch(options: Options) {
         setSwitching(true);
         trace("switch_started", { activeId: decision.from.id, targetId: decision.to.id, reason: decision.reason });
         setStatus(decision.reason === "expiring_five_hour" ? "Switching to use five-hour quota before it resets…" : "Switching to the best verified alternative…");
-        const switched = await latest.current.onSwitch(decision.to.id, cancelled);
+        const switched = await latest.current.onSwitch(decision.to.id, cancelled, trace);
         trace("switch_finished", { activeId: decision.from.id, targetId: decision.to.id, switched });
         if (switched) {
           recent.current.set(decision.from.id, Date.now() + 5 * 60000);

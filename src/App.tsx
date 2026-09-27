@@ -617,8 +617,8 @@ function App() {
     };
   }, []);
 
-  const handleSwitch = async (accountId: string, force = false, reopenIde = true) => {
-    if (switchInFlightRef.current) return false;
+  const handleSwitch = async (accountId: string, force = false, reopenIde = true, trace?: (event: string, detail?: Record<string, unknown>) => void) => {
+    if (switchInFlightRef.current) { trace?.("switch_aborted", { reason: "switch_already_in_flight" }); return false; }
     switchInFlightRef.current = true;
     setSwitchingId(accountId);
     let switched = false;
@@ -626,18 +626,22 @@ function App() {
       if (!force) {
         const latestProcessInfo = await checkProcesses();
         if (!latestProcessInfo) {
+          trace?.("switch_aborted", { reason: "process_check_failed" });
           showWarmupToast("Could not check running Codex sessions. Try again.", true);
           return false;
         }
         if (!latestProcessInfo.can_switch) {
+          trace?.("switch_aborted", { reason: "running_codex_requires_confirmation", processCount: latestProcessInfo.count });
           setPendingTraySwitchAccountId(accountId);
           setForceCloseConfirmOpen(true);
           return false;
         }
       }
+      trace?.("switch_backend_started", { force, reopenIde });
       await switchAccount(accountId, force, reopenIde);
       switched = true;
     } catch (err) {
+      trace?.("switch_backend_failed", { error: formatWarmupError(err) });
       console.error("Failed to switch account:", err);
       showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
     } finally {
@@ -793,10 +797,12 @@ function App() {
       forceCloseConfirmOpen ? "close_confirmation_open" : loading ? "loading_accounts" :
       staggerRunning ? "staggered_warmup" : undefined,
     accounts,
-    onSwitch: async (accountId, cancelled) => {
+    onSwitch: async (accountId, cancelled, trace) => {
       const processes = await checkProcesses();
-      if (!processes || cancelled()) return false;
-      const switched = await handleSwitch(accountId, !processes.can_switch, false);
+      if (!processes) { trace("switch_aborted", { reason: "process_check_failed" }); return false; }
+      if (cancelled()) { trace("switch_aborted", { reason: "cancelled_after_process_check" }); return false; }
+      trace("switch_process_check", { canSwitch: processes.can_switch, processCount: processes.count });
+      const switched = await handleSwitch(accountId, !processes.can_switch, false, trace);
       if (switched) showWarmupToast("Auto-selected the best available account based on fresh quota.");
       return switched;
     },
