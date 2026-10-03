@@ -9,7 +9,7 @@ import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { GoalContinuationPreference } from "./goalPreference";
-import { RetryLedger, RetryPrompt, overloaded, retryDelay, goalKey } from "./capacityRetry";
+import { RetryLedger, RetryPrompt, NetworkResumePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
 import { SESSION_ID, canContinueGoal, captureGoal, fingerprint, goalReadyAction, sessionIdFromStatus, type GoalCapture } from "./goal";
 
 const PROTOCOL_VERSION = 1;
@@ -72,6 +72,7 @@ interface ActiveExecution {
   discovered?: boolean;
   outputRevision?: number;
   retryPrompt?: RetryPrompt;
+  networkResumePrompt?: NetworkResumePrompt;
 }
 
 let bridgeRoot = "";
@@ -93,6 +94,8 @@ let retryGeneration = 0;
 const retryNotified = new Set<string>();
 const retrySent = new Map<string, { turn: string; at: number; warned: boolean }>();
 const retryPending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; generation: number }>();
+const networkResumePending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; revision: number }>();
+let networkResumePolling = false;
 
 function retryMode(): string {
   return enabled() ? vscode.workspace.getConfiguration("aiAccountSwitcherResume").get<string>("capacityRetry", "automatic") : "off";
@@ -100,7 +103,55 @@ function retryMode(): string {
 function cancelRetries(): void {
   retryGeneration++;
   retryPending.clear();
+  networkResumePending.clear();
   for (const active of activeExecutions.values()) active.retryPrompt?.invalidate();
+}
+async function pollNetworkGoalResumes(): Promise<void> {
+  if (networkResumePolling || stopped || !continueGoals() || Date.now() < retryBlockedUntil) return;
+  networkResumePolling = true;
+  const generation = retryGeneration;
+  const ledger = new RetryLedger(path.join(bridgeRoot, "network-goal-resumes"));
+  try {
+    for (const [terminal, active] of activeExecutions) {
+    const session = active.sessionId;
+    const prompt = active.networkResumePrompt;
+    if (active.tool !== "codex" || !active.execution || !session || !prompt?.observedAt || pendingGoals.has(terminal)) continue;
+    const valid = () => !stopped && continueGoals() && generation === retryGeneration && Date.now() >= retryBlockedUntil &&
+      activeExecutions.get(terminal) === active && active.sessionId === session && !!prompt.observedAt;
+    try {
+      const turn = await codexReader.latestTurn(session, active.cwd);
+      if (!valid()) return;
+      if (!networkPermissionRevoked(turn) || !Number.isFinite(turn.completedAt) ||
+          Date.now() - turn.completedAt! * 1000 > 15 * 60000 || turn.completedAt! * 1000 > Date.now() + 5000 ||
+          prompt.observedAt < turn.completedAt! * 1000) { networkResumePending.delete(terminal); continue; }
+      const goal = await codexReader.readGoal(session, active.cwd);
+      if (!valid()) return;
+      const key = goal?.status === "paused" ? goalKey(goal) : undefined;
+      if (!key) { networkResumePending.delete(terminal); continue; }
+      let pending = networkResumePending.get(terminal);
+      if (!pending || pending.turn !== turn.id || pending.goal !== key || pending.revision !== prompt.revision) {
+        pending = { turn: turn.id, due: Date.now() + 15000, goal: key, revision: prompt.revision };
+        networkResumePending.set(terminal, pending);
+        output.appendLine(`Network goal resume scheduled in 15 seconds for ${session}.`);
+      }
+      if (Date.now() < pending.due) continue;
+      const revision = prompt.revision;
+      const latest = await codexReader.latestTurn(session, active.cwd);
+      const currentGoal = await codexReader.readGoal(session, active.cwd);
+      if (!valid() || prompt.revision !== revision || latest?.id !== pending.turn || !networkPermissionRevoked(latest) ||
+          currentGoal?.status !== "paused" || goalKey(currentGoal) !== pending.goal) { networkResumePending.delete(terminal); continue; }
+      const claimed = await ledger.claim(session, pending.turn);
+      networkResumePending.delete(terminal);
+      if (!claimed) { output.appendLine(`Network goal resume already handled or retry limit reached for ${session}.`); continue; }
+      if (!valid() || prompt.revision !== revision) continue;
+      prompt.invalidate();
+      terminal.sendText("", true); // Enter selects the observed first choice, Resume goal.
+      output.appendLine(`Selected Resume goal after the network permission error for ${session}.`);
+    } catch (error) {
+      output.appendLine(`Network goal resume check failed for ${session}: ${String(error)}`);
+    }
+    }
+  } finally { networkResumePolling = false; }
 }
 async function offerRetry(terminal: vscode.Terminal, active: ActiveExecution, turn: string, reason: string): Promise<void> {
   const key = `${active.sessionId}:${turn}`;
@@ -233,11 +284,13 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
       const revision = active.outputRevision = (active.outputRevision ?? 0) + 1;
       dialogCleaners.get(terminal)?.observe(chunk);
       active.retryPrompt?.observe(chunk);
+      active.networkResumePrompt?.observe(chunk);
       tail = (tail + chunk).slice(-8192);
       // A subsequently displayed different /status invalidates the explicit binding.
       const observedId = sessionIdFromStatus(tail);
       if (observedId && active.sessionId && observedId !== active.sessionId) {
         active.retryPrompt?.invalidate();
+        active.networkResumePrompt?.invalidate();
         retryPending.delete(terminal);
         active.sessionId = undefined;
         clearDialogCleaner(terminal);
@@ -750,6 +803,7 @@ export function activate(context: vscode.ExtensionContext): void {
         tool,
         cwd,
         retryPrompt: tool === "codex" ? new RetryPrompt() : undefined,
+        networkResumePrompt: tool === "codex" ? new NetworkResumePrompt() : undefined,
         yolo: yoloFromCommand(event.execution.commandLine.value),
         resumeLast: isLastResumeCommand(event.execution.commandLine.value),
         sessionId: tool === "codex" ? sessionIdFromCommand(event.execution.commandLine.value) : undefined,
@@ -795,6 +849,7 @@ export function activate(context: vscode.ExtensionContext): void {
       const active = activeExecutions.get(event.terminal);
       if (active?.execution === event.execution) {
         retryPending.delete(event.terminal);
+        networkResumePending.delete(event.terminal);
         clearDialogCleaner(event.terminal);
         activeExecutions.delete(event.terminal);
         clearPendingGoal(event.terminal);
@@ -804,6 +859,7 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.onDidCloseTerminal((terminal) => {
       resumeAttempts.delete(terminal);
       retryPending.delete(terminal);
+      networkResumePending.delete(terminal);
       cleanupLaunches.delete(terminal);
       clearDialogCleaner(terminal);
       terminalExecutions.delete(terminal);
@@ -828,7 +884,7 @@ export function activate(context: vscode.ExtensionContext): void {
   heartbeatTimer = setInterval(queueHeartbeat, HEARTBEAT_INTERVAL_MS);
   void refreshDiscovery();
   discoveryTimer = setInterval(() => void refreshDiscovery(), 5000);
-  retryTimer = setInterval(() => void pollCapacityRetries(), 7000);
+  retryTimer = setInterval(() => { void pollCapacityRetries(); void pollNetworkGoalResumes(); }, 7000);
   pollTimer = setInterval(() => void pollBridge().catch(error => output.appendLine(`Bridge check failed: ${String(error)}`)), POLL_INTERVAL_MS);
   output.appendLine(`Bridge active for ${ideKind} as ${clientId}; desktop goal continuation ${continueGoals() ? "on" : "off"}.`);
 }

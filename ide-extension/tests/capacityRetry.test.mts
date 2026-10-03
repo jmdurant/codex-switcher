@@ -3,7 +3,7 @@ import test from "node:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { overloaded, goalKey, retryDelay, RetryPrompt, RetryLedger } from "../src/capacityRetry.ts";
+import { overloaded, networkPermissionRevoked, goalKey, retryDelay, RetryPrompt, RetryLedger, NetworkResumePrompt } from "../src/capacityRetry.ts";
 import type { Goal } from "../src/goal.ts";
 const id = "01a0537e-b2f9-7b71-9520-8db14bf0a76f";
 const turn = "01a053b5-c94d-7ce3-8c32-ff2ea32a51cc";
@@ -15,6 +15,20 @@ test("only completed failures with the observed structured capacity code qualify
   assert.equal(overloaded({id:turn,status:"failed",error:{message:"Selected model is at capacity. Please try a different model."}}),true);
   assert.equal(overloaded({id:turn,status:"inProgress",error:{codexErrorInfo:"serverOverloaded"}}),false);
   assert.equal(overloaded(null),false);
+});
+test("only the observed network permission failure qualifies", () => {
+  assert.equal(networkPermissionRevoked({id:turn,status:"failed",error:{codexErrorInfo:"other",message:"Error running remote compact task: Fatal error: application network permission was revoked"}}),true);
+  assert.equal(networkPermissionRevoked({id:turn,status:"failed",error:{message:"A different network error"}}),false);
+  assert.equal(networkPermissionRevoked({id:turn,status:"completed",error:{message:"Fatal error: application network permission was revoked"}}),false);
+});
+test("network goal prompt requires both numbered choices and invalidates on new output", () => {
+  const prompt = new NetworkResumePrompt();
+  prompt.observe("1. Resume goal\r\n"); assert.equal(prompt.observedAt,0);
+  prompt.observe("2. Leave paused\r\n"); assert.ok(prompt.observedAt);
+  prompt.observe("\x1b]0;spinner\x07"); assert.ok(prompt.observedAt);
+  prompt.observe("another prompt"); assert.equal(prompt.observedAt,0);
+  prompt.observe("1. Resume goal\r\n2. Leave paused\r\n"); assert.ok(prompt.observedAt);
+  prompt.invalidate(); assert.equal(prompt.observedAt,0);
 });
 test("capacity delays increase with bounded jitter", () => {
   assert.deepEqual([0,1,2,3,4,5].map(n=>retryDelay(n,0)),[30000,60000,120000,240000,300000,300000]);

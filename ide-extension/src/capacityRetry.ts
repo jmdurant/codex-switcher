@@ -10,6 +10,30 @@ export function overloaded(turn: RetryTurn | null): turn is RetryTurn {
   const message = typeof turn.error?.message === "string" ? turn.error.message : "";
   return code === "serverOverloaded" || code === "server_overloaded" || /selected model is at capacity/i.test(message);
 }
+export function networkPermissionRevoked(turn: RetryTurn | null): turn is RetryTurn {
+  return turn?.status === "failed" &&
+    typeof turn.error?.message === "string" &&
+    /Fatal error: application network permission was revoked/i.test(turn.error.message);
+}
+
+/** A fresh, complete numbered goal dialog; later screen output invalidates it. */
+export class NetworkResumePrompt {
+  private text = "";
+  observedAt = 0;
+  revision = 0;
+  observe(chunk: string): void {
+    if (isNonVisualUpdate(chunk)) return;
+    this.revision++;
+    if (this.observedAt) this.text = "";
+    this.observedAt = 0;
+    const erased = Math.max(chunk.lastIndexOf("\x1b[2J"), chunk.lastIndexOf("\x1b[3J"));
+    if (erased >= 0) { this.text = ""; chunk = chunk.slice(erased + 4); }
+    this.text = (this.text + chunk).slice(-4096);
+    const text = cleanTerminalText(this.text);
+    if (/1[.)]\s*Resume goal\b/i.test(text) && /2[.)]\s*Leave paused\b/i.test(text)) this.observedAt = Date.now();
+  }
+  invalidate(): void { this.text = ""; this.observedAt = 0; this.revision++; }
+}
 export function retryDelay(attempt: number, random = Math.random()): number {
   return [30, 60, 120, 240, 300][Math.min(attempt, 4)]! * 1000 + Math.floor(random * 5000);
 }
