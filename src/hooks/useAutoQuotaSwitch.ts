@@ -45,6 +45,7 @@ export function useAutoQuotaSwitch(options: Options) {
         for (const [id, expiry] of recent.current) if (expiry <= now) recent.current.delete(id);
         const decision = await findAutoQuotaSwitch({
           listAccounts: () => invokeBackend<AccountWithUsage[]>("list_accounts"),
+          getCurrentLogin: () => invokeBackend<{ account: { id: string }; is_managed: boolean } | null>("get_current_codex_login"),
           getUsage: (accountId) => invokeBackend<UsageInfo>("get_usage", { accountId }),
           now: Date.now,
           cancelled,

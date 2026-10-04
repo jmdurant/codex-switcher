@@ -3,6 +3,7 @@ import { DEFAULT_AUTO_QUOTA_POLICY, expiringFiveHourReset, quotaOption, selectAu
 
 export interface AutoQuotaSource {
   listAccounts: () => Promise<AccountWithUsage[]>;
+  getCurrentLogin?: () => Promise<{ account: { id: string }; is_managed: boolean } | null>;
   getUsage: (id: string) => Promise<UsageInfo>;
   cancelled: () => boolean;
   now: () => number;
@@ -16,6 +17,18 @@ export async function findAutoQuotaSwitch(source: AutoQuotaSource, excludedIds: 
   const active = accounts.find(a => a.is_active && a.auth_mode === "chat_g_p_t");
   if (!active) { trace("no_active_chatgpt_account"); return undefined; }
   if (source.cancelled()) { trace("cancelled_after_list", { activeId: active.id }); return undefined; }
+  if (source.getCurrentLogin) {
+    try {
+      const live = await source.getCurrentLogin();
+      if (!live?.is_managed || live.account.id !== active.id) {
+        trace("live_login_mismatch", { selectedId: active.id, liveId: live?.is_managed ? live.account.id : null });
+        return undefined;
+      }
+    } catch (error) {
+      trace("live_login_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      return undefined;
+    }
+  }
   const read = async (account: AccountWithUsage): Promise<AccountWithUsage> => {
     try {
       const usage = await source.getUsage(account.id);
@@ -51,6 +64,18 @@ export async function findAutoQuotaSwitch(source: AutoQuotaSource, excludedIds: 
   if (source.cancelled()) { trace("cancelled_during_verification", { activeId: active.id }); return undefined; }
   if (latestAccounts.find(a => a.is_active)?.id !== active.id || !latestAccounts.some(a => a.id === choice.account.id)) {
     trace("accounts_changed_during_verification", { activeId: active.id, targetId: choice.account.id }); return undefined;
+  }
+  if (source.getCurrentLogin) {
+    try {
+      const live = await source.getCurrentLogin();
+      if (!live?.is_managed || live.account.id !== active.id) {
+        trace("live_login_changed_during_verification", { selectedId: active.id, liveId: live?.is_managed ? live.account.id : null });
+        return undefined;
+      }
+    } catch (error) {
+      trace("live_login_check_failed", { error: error instanceof Error ? error.message : String(error) });
+      return undefined;
+    }
   }
   const verified = selectAutoQuotaOption([freshActive, freshTarget], source.now(), excludedIds, policy);
   if (!verified) {

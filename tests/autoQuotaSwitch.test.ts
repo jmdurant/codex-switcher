@@ -15,6 +15,22 @@ const excluded = new Set<string>();
 test("healthy active quota stays put even with a better-ranked alternative", () => {
   assert.equal(selectAutoQuotaOption([account("active", 11), account("soon", 90, 2)], now), undefined);
 });
+test("auto-switch stops when the selected card differs from the live Codex login", async () => {
+  const events: string[] = [];
+  const inputs = { ...source([account("active", 0), account("best", 50)]),
+    getCurrentLogin: async () => ({ account: { id: "best" }, is_managed: true }),
+    trace: (event: string) => events.push(event) };
+  assert.equal(await findAutoQuotaSwitch(inputs, excluded), undefined);
+  assert.ok(events.includes("live_login_mismatch"));
+  assert.ok(!events.includes("switch_selected"));
+});
+test("manual Codex login during quota verification cancels auto-switch", async () => {
+  let checks = 0;
+  const inputs = { ...source([account("active", 0), account("best", 50)]),
+    getCurrentLogin: async () => ({ account: { id: ++checks === 1 ? "active" : "best" }, is_managed: true }) };
+  assert.equal(await findAutoQuotaSwitch(inputs, excluded), undefined);
+  assert.equal(checks, 2);
+});
 test("zero quota moves to the healthiest eligible ranking, excluding active and recent accounts", () => {
   const accounts = [account("active", 0), account("soon", 40, 2), account("later", 90)];
   assert.equal(selectAutoQuotaOption(accounts, now)?.account.id, "soon");
