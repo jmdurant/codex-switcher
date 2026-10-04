@@ -44,9 +44,11 @@ export class CodexReader {
   private pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private launch: () => Promise<Launch>;
   private timeoutMs: number;
-  constructor(launch: () => Promise<Launch> = codexLaunch, timeoutMs = 4000) {
+  private listTimeoutMs: number;
+  constructor(launch: () => Promise<Launch> = codexLaunch, timeoutMs = 4000, listTimeoutMs = 30000) {
     this.launch = launch;
     this.timeoutMs = timeoutMs;
+    this.listTimeoutMs = listTimeoutMs;
   }
 
   private async connect(): Promise<void> {
@@ -82,11 +84,11 @@ export class CodexReader {
     })();
     try { await this.ready; } catch (error) { this.dispose(); throw error; }
   }
-  private request(method: string, params: unknown): Promise<any> {
+  private request(method: string, params: unknown, timeoutMs = this.timeoutMs): Promise<any> {
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
       if (!this.child) { reject(new Error("Codex reader is not connected.")); return; }
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Codex ${method} timed out.`)); }, this.timeoutMs);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Codex ${method} timed out.`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
     });
@@ -113,7 +115,8 @@ export class CodexReader {
    * conversation when Linux has no native process-owner discovery. */
   async recentInteractiveSession(cwd: string, report?: (reason: string, detail: Record<string, number>) => void): Promise<string | undefined> {
     await this.connect();
-    const result = await this.request("thread/list", { cwd });
+    // The daemon may take many seconds to enumerate a large conversation history.
+    const result = await this.request("thread/list", { cwd }, this.listTimeoutMs);
     if (!Array.isArray(result?.data)) {
       report?.("invalid_thread_list", {});
       return undefined;

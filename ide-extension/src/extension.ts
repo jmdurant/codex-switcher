@@ -417,7 +417,8 @@ function refreshDiscovery(): Promise<void> {
       }
     }
     queueHeartbeat();
-  })().catch(() => {
+  })().catch((error) => {
+    output.appendLine(`Codex session discovery failed: ${String(error)}`);
     // An unavailable native query must never turn into a guessed identity.
     for (const [terminal, active] of activeExecutions) {
       if (active.discovered) { active.sessionId = undefined; clearPendingGoal(terminal); }
@@ -489,6 +490,10 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
   retryBlockedUntil = Date.now() + 2 * 60000;
   cancelRetries();
   acknowledgedRequests.add(request.requestId);
+
+  // A switch can arrive before the periodic Linux discovery has completed.
+  // Wait for the exact session binding before persisting the capture.
+  if (request.tool === "codex") await refreshDiscovery();
 
   const sessions: CapturedSession[] = [];
   const reads: Promise<void>[] = [];

@@ -64,6 +64,15 @@ test("reader times out and can be disposed without hanging", async () => {
   try { await assert.rejects(reader.readGoal(id, process.cwd()), /timed out/); }
   finally { reader.dispose(); }
 });
+test("conversation discovery allows a slower thread list without extending other read timeouts", async () => {
+  const delayed = fixture.replace("if(q.method === 'thread/read')", `if(q.method === 'thread/list') {
+    return setTimeout(() => console.log(JSON.stringify({id:q.id,result:{data:[{id:'${id}',cwd:process.cwd(),source:'cli',parentThreadId:null,updatedAt:Math.floor(Date.now()/1000)}]}})), 700);
+  }
+  if(q.method === 'thread/read')`);
+  const reader = new CodexReader(async () => ({executable:process.execPath,args:['-e',delayed]}), 500, 1500);
+  try { assert.equal(await reader.recentInteractiveSession(process.cwd()), id); }
+  finally { reader.dispose(); }
+});
 test("reader rejects malformed goals instead of assuming they are resumable", async () => {
   const reader = new CodexReader(async () => ({executable:process.execPath,args:['-e',fixture.replace("status:'active'", "status:'unknown'")]}));
   try { await assert.rejects(reader.readGoal(id, process.cwd()), /unsupported goal state/); }

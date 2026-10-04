@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 const PROTOCOL_VERSION: u8 = 1;
 const CLIENT_MAX_AGE_MS: u64 = 6_000;
-const PREPARE_TIMEOUT: Duration = Duration::from_millis(1_500);
+// The extension may need to enumerate Codex threads to bind a running Linux
+// terminal to its exact session before it can safely capture that terminal.
+const PREPARE_TIMEOUT: Duration = Duration::from_secs(35);
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 const CLEANUP_MAX_AGE: Duration = Duration::from_secs(60 * 60);
 
