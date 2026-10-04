@@ -52,7 +52,7 @@ async function capacityScenario(change: string) {
   };
   class Clock extends Date { static now() { return now; } }
   const module = { exports: {} as any };
-  vm.runInNewContext(compiled.outputFiles[0].text + "\nmodule.exports.testPoll = pollCapacityRetries; module.exports.testNetworkPoll = pollNetworkGoalResumes;", {
+  vm.runInNewContext(compiled.outputFiles[0].text + "\nmodule.exports.testPoll = pollCapacityRetries; module.exports.testNetworkPoll = pollNetworkGoalResumes; module.exports.blockCapacityRetries = () => { retryBlockedUntil = Date.now() + 120000; };", {
     module, exports: module.exports, process: { ...process, platform: "linux" }, console, Buffer, Date: Clock,
     require: (name: string) => name === "vscode" ? vscode : name === "node:os" ? { ...os, homedir: () => root } : require(name),
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
@@ -77,6 +77,7 @@ async function capacityScenario(change: string) {
     if (change === "typing") { ex.push("typed text"); await new Promise(resolve=>setTimeout(resolve,10)); }
     if (change === "goal_changed") goal = {threadId:id,objective:"new",createdAt:2,status:"active",tokenBudget:100,tokensUsed:1};
     if (change.startsWith("network_")) {
+      if (change === "network_after_switch") module.exports.blockCapacityRetries();
       turn = { id: requestId, status: "failed", error: { codexErrorInfo: "other", message: change === "network_other_error" ? "A different network error" : "Error running remote compact task: Fatal error: application network permission was revoked" }, completedAt: Math.floor(now / 1000) };
       goal = {threadId:id,objective:"task",createdAt:1,status:change === "network_goal_complete" ? "complete" : "paused",tokenBudget:100,tokensUsed:1};
       ex.push("1. Resume goal\r\n2. Leave paused\r\n");
@@ -85,9 +86,9 @@ async function capacityScenario(change: string) {
       now += 20000;
       if (change === "network_prompt_changed") { ex.push("another prompt"); await new Promise(resolve => setTimeout(resolve, 10)); }
       await module.exports.testNetworkPoll();
-      assert.deepEqual(sent, change === "network_success" ? [""] : []);
+      assert.deepEqual(sent, ["network_success", "network_after_switch"].includes(change) ? [""] : []);
       await module.exports.testNetworkPoll();
-      assert.deepEqual(sent, change === "network_success" ? [""] : []);
+      assert.deepEqual(sent, ["network_success", "network_after_switch"].includes(change) ? [""] : []);
       return;
     }
     await module.exports.testPoll();
@@ -106,7 +107,7 @@ async function capacityScenario(change: string) {
 for (const change of ["success","ask","focused","quota","running","paused","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
   test(`capacity extension flow: ${change}`, () => capacityScenario(change));
 }
-for (const change of ["network_success","network_other_error","network_goal_complete","network_prompt_changed"]) {
+for (const change of ["network_success","network_after_switch","network_other_error","network_goal_complete","network_prompt_changed"]) {
   test(`network goal resume flow: ${change}`, () => capacityScenario(change));
 }
 

@@ -107,7 +107,7 @@ function cancelRetries(): void {
   for (const active of activeExecutions.values()) active.retryPrompt?.invalidate();
 }
 async function pollNetworkGoalResumes(): Promise<void> {
-  if (networkResumePolling || stopped || !continueGoals() || Date.now() < retryBlockedUntil) return;
+  if (networkResumePolling || stopped || !continueGoals()) return;
   networkResumePolling = true;
   const generation = retryGeneration;
   const ledger = new RetryLedger(path.join(bridgeRoot, "network-goal-resumes"));
@@ -116,7 +116,7 @@ async function pollNetworkGoalResumes(): Promise<void> {
     const session = active.sessionId;
     const prompt = active.networkResumePrompt;
     if (active.tool !== "codex" || !active.execution || !session || !prompt?.observedAt || pendingGoals.has(terminal)) continue;
-    const valid = () => !stopped && continueGoals() && generation === retryGeneration && Date.now() >= retryBlockedUntil &&
+    const valid = () => !stopped && continueGoals() && generation === retryGeneration &&
       activeExecutions.get(terminal) === active && active.sessionId === session && !!prompt.observedAt;
     try {
       const turn = await codexReader.latestTurn(session, active.cwd);
