@@ -15,7 +15,7 @@ use crate::commands::{
     export_accounts_slim_text, fetch_usage, get_account_usage_stats, get_active_account_info,
     get_masked_account_ids, import_accounts_full_encrypted_bytes, import_accounts_slim_text,
     kill_codex_processes, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, set_masked_account_ids, start_login, start_relogin, switch_account,
+    redeem_reset_credit_manual, rename_account, set_masked_account_ids, start_login, start_relogin, switch_account,
     warmup_account, warmup_all_accounts,
 };
 
@@ -24,6 +24,15 @@ use crate::commands::{
 struct AccountIdArgs {
     #[serde(alias = "account_id")]
     account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RedeemResetArgs {
+    #[serde(alias = "account_id")]
+    account_id: String,
+    #[serde(alias = "credit_id")]
+    credit_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -145,6 +154,10 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "get_account_usage_stats" => {
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(get_account_usage_stats(args.account_id).await?)
+        }
+        "redeem_reset_credit" => {
+            let args: RedeemResetArgs = parse_args(payload)?;
+            to_json(redeem_reset_credit_manual(args.account_id, args.credit_id).await?)
         }
         "refresh_account_metadata" => {
             let args: AccountIdArgs = parse_args(payload)?;

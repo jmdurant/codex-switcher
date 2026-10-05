@@ -286,6 +286,39 @@ pub async fn get_reset_credits(account_id: &str) -> anyhow::Result<AccountResetC
     fetch_reset_credits(&account).await
 }
 
+/// Manual redemption is authorized by the GUI confirmation, independently of
+/// the agent-access setting. Re-read availability immediately before spending.
+pub async fn redeem_reset_credit_manual(account_id: String, credit_id: String) -> Result<serde_json::Value, String> {
+    redeem_reset_credit_manual_inner(&account_id, &credit_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn redeem_reset_credit(account_id: String, credit_id: String) -> Result<serde_json::Value, String> {
+    redeem_reset_credit_manual(account_id, credit_id).await
+}
+
+async fn redeem_reset_credit_manual_inner(account_id: &str, credit_id: &str) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(!credit_id.is_empty() && credit_id.len() <= 256, "Invalid reset credit ID");
+    let store = load_accounts()?;
+    anyhow::ensure!(store.active_account_id.as_deref() == Some(account_id), "This account is no longer active. Activate it and check resets again.");
+    let credits = get_reset_credits(account_id).await?;
+    let credit = credits.credits.iter().find(|credit| credit.id == credit_id)
+        .ok_or_else(|| anyhow::anyhow!("Reset credit is no longer available"))?;
+    anyhow::ensure!(is_redeemable_reset_credit(credit, Utc::now()),
+        "Reset credit is unavailable, expired, or not a Codex rate-limit reset");
+    let request_id = uuid::Uuid::new_v4().to_string();
+    consume_reset_credit(account_id, credit_id, &request_id).await
+}
+
+fn is_redeemable_reset_credit(credit: &AccountResetCredit, now: DateTime<Utc>) -> bool {
+    credit.status == "available" && credit.reset_type == "codex_rate_limits"
+        && credit.expires_at.as_ref().is_none_or(|expiry| {
+            DateTime::parse_from_rfc3339(expiry).is_ok_and(|date| date > now)
+        })
+}
+
 /// Verified against the installed Codex desktop client (26.901.6511.0), which posts
 /// credit_id and redeem_request_id to this route. Never automatically retry a POST.
 pub(crate) async fn consume_reset_credit(account_id: &str, credit_id: &str, request_id: &str) -> anyhow::Result<serde_json::Value> {
@@ -497,6 +530,32 @@ fn extract_chatgpt_auth(account: &StoredAccount) -> anyhow::Result<(&str, Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manual_redemption_rejects_expired_or_wrong_type_credits() {
+        let now = DateTime::parse_from_rfc3339("2026-10-05T12:00:00Z")
+            .unwrap().with_timezone(&Utc);
+        let mut credit = AccountResetCredit {
+            id: "credit-a".into(),
+            reset_type: "codex_rate_limits".into(),
+            status: "available".into(),
+            granted_at: None,
+            expires_at: Some("2026-10-06T12:00:00Z".into()),
+            redeem_started_at: None,
+            redeemed_at: None,
+            title: None,
+            description: None,
+        };
+        assert!(is_redeemable_reset_credit(&credit, now));
+        credit.expires_at = Some("2026-10-04T12:00:00Z".into());
+        assert!(!is_redeemable_reset_credit(&credit, now));
+        credit.expires_at = None;
+        credit.reset_type = "other".into();
+        assert!(!is_redeemable_reset_credit(&credit, now));
+        credit.reset_type = "codex_rate_limits".into();
+        credit.status = "redeemed".into();
+        assert!(!is_redeemable_reset_credit(&credit, now));
+    }
 
     #[test]
     fn redemption_requires_explicit_confirmation_for_the_selected_credit() {

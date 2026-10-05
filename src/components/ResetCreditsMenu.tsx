@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
-import type { AccountResetCredits } from "../types";
+import type { AccountResetCredit, AccountResetCredits } from "../types";
 import { formatResetCreditDateTime, getAvailableResetCredits } from "../lib/resetCredits";
+import { invokeBackend } from "../lib/platform";
 
 function getResetCreditsTone(resetCredits: AccountResetCredits | null): {
   container: string;
@@ -50,16 +51,32 @@ export function ResetCreditsMenu({
   compact,
   resetCredits,
   stale = false,
+  accountId,
+  accountName,
+  active,
+  onRedeemed,
 }: {
   compact: boolean;
   resetCredits: AccountResetCredits | null;
   stale?: boolean;
+  accountId: string;
+  accountName: string;
+  active: boolean;
+  onRedeemed: () => Promise<void>;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [selected, setSelected] = useState<AccountResetCredit | null>(null);
+  const [redeeming, setRedeeming] = useState(false);
+  const [redeemError, setRedeemError] = useState("");
+  const [uncertain, setUncertain] = useState(false);
+  const [usedIds, setUsedIds] = useState<string[]>([]);
+  const redeemLock = useRef(false);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popupId = useId();
-  const availableCredits = getAvailableResetCredits(resetCredits);
+  const availableCredits = getAvailableResetCredits(resetCredits).filter(
+    (credit) => !usedIds.includes(credit.id),
+  );
   const count = availableCredits.length;
   const countLabel = count === 1 ? "1 reset" : `${count} resets`;
   const nextExpiry = formatResetCreditDateTime(
@@ -98,7 +115,37 @@ export function ResetCreditsMenu({
 
   useEffect(() => {
     setIsOpen(false);
+    setSelected(null);
   }, [resetCredits]);
+
+  useEffect(() => {
+    setUsedIds([]);
+    setUncertain(false);
+  }, [accountId]);
+
+  const redeem = async () => {
+    if (!selected || redeemLock.current || uncertain || stale || !active) return;
+    redeemLock.current = true;
+    setRedeeming(true);
+    setRedeemError("");
+    try {
+      await invokeBackend("redeem_reset_credit", {
+        accountId,
+        creditId: selected.id,
+      });
+      setUsedIds((ids) => [...ids, selected.id]);
+      setSelected(null);
+      setIsOpen(false);
+      await onRedeemed().catch(() => {});
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setRedeemError(message);
+      setUncertain(message.startsWith("UNCERTAIN:"));
+    } finally {
+      redeemLock.current = false;
+      setRedeeming(false);
+    }
+  };
 
   if (count === 0) return null;
 
@@ -162,7 +209,15 @@ export function ResetCreditsMenu({
             </span>
           </div>
           <div className="max-h-64 overflow-y-auto py-1">
-            {availableCredits.map((credit, index) => (
+            {selected ? <div className="space-y-3 px-3 py-3 text-xs text-gray-800 dark:text-gray-200">
+              <p className="font-semibold">Use this reset?</p>
+              <p><strong>{selected.title?.trim() || "Codex rate-limit reset"}</strong> for <strong>{accountName}</strong></p>
+              <p>{formatExpiryDetail(selected.expires_at)}. This may forfeit remaining quota and change reset dates.</p>
+              <div className="flex gap-2">
+                <button type="button" disabled={redeeming || uncertain} onClick={() => void redeem()} className="rounded bg-amber-600 px-3 py-1.5 font-medium text-white disabled:opacity-50">{redeeming ? "Using reset…" : "Confirm use"}</button>
+                <button type="button" disabled={redeeming} onClick={() => { setSelected(null); setRedeemError(""); }} className="rounded border border-gray-300 px-3 py-1.5 dark:border-gray-600">Cancel</button>
+              </div>
+            </div> : availableCredits.map((credit, index) => (
               <div
                 key={credit.id}
                 className="flex items-start gap-2.5 px-3 py-2.5 text-xs"
@@ -170,19 +225,21 @@ export function ResetCreditsMenu({
                 <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full font-semibold ${tone.badge}`}>
                   {index + 1}
                 </span>
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="truncate font-medium text-gray-800 dark:text-gray-200">
                     {credit.title?.trim() || `Reset ${index + 1}`}
                   </div>
                   <div className="mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                     {formatExpiryDetail(credit.expires_at)}
                   </div>
+                  {active && credit.reset_type === "codex_rate_limits" && <button type="button" disabled={stale || uncertain || redeeming} onClick={() => { setSelected(credit); setRedeemError(""); }} className="mt-1 rounded border border-amber-500 px-2 py-1 text-[11px] font-medium text-amber-700 disabled:opacity-50 dark:text-amber-300">Use reset</button>}
                 </div>
               </div>
             ))}
           </div>
+          {redeemError && <p role="alert" className="px-3 py-2 text-xs text-red-600 dark:text-red-400">{redeemError}</p>}
           <div className="border-t border-gray-100 px-3 py-2 text-[10px] text-gray-400 dark:border-gray-800 dark:text-gray-500">
-            {stale ? "Last known resets. Refresh unavailable; availability may have changed." : "Times shown in your local time"}
+            {stale ? "Last known resets. Refresh before using one." : !active ? "Activate this account before using a reset." : uncertain ? "Redemption status is uncertain. Check quota and resets before another attempt." : "Times shown in your local time"}
           </div>
         </div>
       )}

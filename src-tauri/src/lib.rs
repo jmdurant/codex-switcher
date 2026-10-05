@@ -21,7 +21,7 @@ use commands::{
     import_accounts_full_encrypted_file, import_accounts_slim_text, kill_antigravity_processes,
     kill_codex_processes, list_accounts, list_antigravity_accounts, log_auto_quota_event, open_main_window,
     prepare_ide_resume, quit_app, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, report_usage, set_app_settings, set_dock_display_mode, set_masked_account_ids,
+    redeem_reset_credit, rename_account, report_usage, set_app_settings, set_dock_display_mode, set_masked_account_ids,
     start_login, start_relogin, switch_account, switch_antigravity_account, warmup_account,
     warmup_all_accounts,
 };
@@ -118,6 +118,7 @@ pub fn run() {
             get_usage,
             log_auto_quota_event,
             get_account_usage_stats,
+            redeem_reset_credit,
             refresh_account_metadata,
             refresh_all_accounts_usage,
             warmup_account,

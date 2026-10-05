@@ -381,6 +381,12 @@ export function AccountCard({
             compact={compactResetCredits}
             resetCredits={resetCredits}
             stale={resetCreditsStale}
+            accountId={account.id}
+            accountName={masked ? "Masked account" : account.name}
+            active={account.is_active}
+            onRedeemed={async () => {
+              await Promise.allSettled([loadResetCredits(), onRefresh()]);
+            }}
           />
         </div>
       </div>
