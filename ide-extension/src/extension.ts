@@ -202,7 +202,7 @@ async function pollCapacityRetries(): Promise<void> {
       if (!valid()) return;
       const key = goalKey(currentGoal);
       const prompt = active.retryPrompt;
-      const deliverable = () => retryMode() === "automatic" && !!active.execution && vscode.window.activeTerminal !== terminal && !!prompt?.observedAt && prompt.observedAt >= turn.completedAt! * 1000 && key !== undefined;
+      const deliverable = () => retryMode() === "automatic" && !!active.execution && !!prompt?.observedAt && prompt.observedAt >= turn.completedAt! * 1000 && key !== undefined;
       if (!deliverable()) {
         retryPending.delete(terminal);
         await offerRetry(terminal, active, turn.id, "Retry manually when ready; use Copy continue to focus its terminal.");
@@ -887,8 +887,6 @@ export function activate(context: vscode.ExtensionContext): void {
       if (!cleanupDialogs()) for (const terminal of dialogCleaners.keys()) clearDialogCleaner(terminal);
     }),
   );
-
-  if (vscode.window.onDidChangeActiveTerminal) context.subscriptions.push(vscode.window.onDidChangeActiveTerminal(() => cancelRetries()));
 
   queueHeartbeat();
   void pollBridge().catch(error => output.appendLine(`Bridge check failed: ${String(error)}`));

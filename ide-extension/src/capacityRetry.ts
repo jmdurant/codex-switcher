@@ -39,9 +39,9 @@ export function retryDelay(attempt: number, random = Math.random()): number {
 }
 export function goalKey(goal: Goal | null): string | undefined {
   if (goal === null) return "none";
-  // A capacity failure can leave the goal paused. Preserve its identity and
-  // let the normal `continue` input wake it without changing the goal.
-  if (!["active", "paused", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
+  // Capacity failures can leave the goal paused or blocked. A single normal
+  // `continue` retries the transient failure without changing goal state.
+  if (!["active", "paused", "blocked", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
   return `${fingerprint(goal)}:${goal.tokenBudget}`;
 }
 

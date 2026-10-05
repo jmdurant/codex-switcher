@@ -67,11 +67,11 @@ async function capacityScenario(change: string) {
     if (change === "focused") vscode.window.activeTerminal = terminal;
     if (change === "quota") turn.error.codexErrorInfo = "usageLimitExceeded";
     if (change === "running") turn.status = "inProgress";
-    if (change === "paused") goal = {threadId:id,objective:"task",createdAt:1,status:"paused",tokenBudget:100,tokensUsed:1};
+    if (["paused", "blocked", "budget_limited"].includes(change)) goal = {threadId:id,objective:"task",createdAt:1,status:change === "budget_limited" ? "budgetLimited" : change,tokenBudget:100,tokensUsed:1};
     if (change === "unobserved") { events.end({terminal,execution:ex}); }
     await module.exports.testPoll();
     now += 36000;
-    if (change === "focus_during_wait") { vscode.window.activeTerminal = terminal; events.focus(terminal); }
+    if (change === "focus_during_wait") vscode.window.activeTerminal = terminal;
     if (change === "disabled") { mode = "off"; events.config({affectsConfiguration:()=>true}); }
     if (change === "new_turn") turn = {...turn,id:"01991234-1234-7123-8123-123456789aaa",status:"completed",error:null};
     if (change === "typing") { ex.push("typed text"); await new Promise(resolve=>setTimeout(resolve,10)); }
@@ -102,11 +102,11 @@ async function capacityScenario(change: string) {
       turn = {...turn,id:"01991234-1234-7123-8123-123456789aaa",status:"completed",error:null};
       await module.exports.testPoll();
       assert.ok(messages.some(s=>s.includes("acknowledged by a new turn")));
-    } else if (change === "paused") assert.deepEqual(sent,["continue"]);
+    } else if (["paused", "blocked", "focused", "focus_during_wait"].includes(change)) assert.deepEqual(sent,["continue"]);
     else assert.deepEqual(sent,[]);
   } finally { await module.exports.deactivate(); await fs.rm(root,{recursive:true,force:true}); }
 }
-for (const change of ["success","ask","focused","quota","running","paused","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
+for (const change of ["success","ask","focused","quota","running","paused","blocked","budget_limited","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
   test(`capacity extension flow: ${change}`, () => capacityScenario(change));
 }
 for (const change of ["network_success","network_after_switch","network_switch_idle","network_switch_idle_pending","network_other_error","network_goal_complete","network_prompt_changed"]) {
