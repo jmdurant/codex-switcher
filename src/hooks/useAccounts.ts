@@ -22,7 +22,8 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const accountsRef = useRef<AccountWithUsage[]>([]);
-  const maxConcurrentUsageRequests = 10;
+  const maxConcurrentUsageRequests = 3;
+  const scheduledRefreshRunning = useRef(false);
 
   useEffect(() => {
     accountsRef.current = accounts;
@@ -428,7 +429,11 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
     // Auto-refresh usage at the user-configured interval (default 1 min).
     const intervalMs = usageRefreshIntervalMs ?? readUsageRefreshIntervalMs();
     const interval = setInterval(() => {
-      refreshUsage().catch(() => {});
+      if (scheduledRefreshRunning.current) return;
+      scheduledRefreshRunning.current = true;
+      refreshUsage().catch(() => {}).finally(() => {
+        scheduledRefreshRunning.current = false;
+      });
     }, intervalMs);
     
     return () => clearInterval(interval);

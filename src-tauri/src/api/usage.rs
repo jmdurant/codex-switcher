@@ -10,6 +10,7 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
@@ -151,7 +152,7 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
     let fresh_account = ensure_chatgpt_tokens_fresh(account).await?;
     let (access_token, chatgpt_account_id) = extract_chatgpt_auth(&fresh_account)?;
 
-    let response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    let response = send_chatgpt_usage_request_with_forbidden_retry(access_token, chatgpt_account_id).await?;
 
     // A 401 can mean expired, replaced, or revoked credentials; reconcile and retry once.
     // 403 is a Cloudflare challenge or permissions error; refreshing the token
@@ -163,7 +164,8 @@ async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInf
         );
         let refreshed_account = refresh_chatgpt_tokens(&fresh_account).await?;
         let (retry_token, retry_account_id) = extract_chatgpt_auth(&refreshed_account)?;
-        let retry_response = send_chatgpt_usage_request(retry_token, retry_account_id).await?;
+        let retry_response =
+            send_chatgpt_usage_request_with_forbidden_retry(retry_token, retry_account_id).await?;
         return parse_usage_response(
             &refreshed_account.id,
             &refreshed_account.name,
@@ -379,6 +381,24 @@ async fn send_chatgpt_usage_request(
         chatgpt_account_id,
     )
     .await
+}
+
+// A 403 from the usage endpoint can clear without any credential change. Retry
+// briefly, but never spend a refresh token on 403 or retry indefinitely.
+async fn send_chatgpt_usage_request_with_forbidden_retry(
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<reqwest::Response> {
+    let mut response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    for (attempt, delay) in [2, 5].into_iter().enumerate() {
+        if response.status() != StatusCode::FORBIDDEN {
+            break;
+        }
+        println!("[Usage] 403 Forbidden; retrying usage request {} of 2 in {delay}s", attempt + 1);
+        tokio::time::sleep(Duration::from_secs(delay)).await;
+        response = send_chatgpt_usage_request(access_token, chatgpt_account_id).await?;
+    }
+    Ok(response)
 }
 
 async fn send_chatgpt_get_request(
