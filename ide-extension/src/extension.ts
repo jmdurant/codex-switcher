@@ -94,7 +94,7 @@ let retryGeneration = 0;
 const retryNotified = new Set<string>();
 const retrySent = new Map<string, { turn: string; at: number; warned: boolean }>();
 const retryPending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; generation: number }>();
-const networkResumePending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; revision: number }>();
+const networkResumePending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; revision: number; action: "confirm" | "resume" }>();
 let networkResumePolling = false;
 
 function retryMode(): string {
@@ -114,8 +114,11 @@ async function pollNetworkGoalResumes(): Promise<void> {
   try {
     for (const [terminal, active] of activeExecutions) {
     const session = active.sessionId;
-    const prompt = active.networkResumePrompt;
-    if (active.tool !== "codex" || !active.execution || !session || !prompt?.observedAt || pendingGoals.has(terminal)) continue;
+    const dialog = active.networkResumePrompt;
+    const idle = active.retryPrompt;
+    const action = dialog?.observedAt ? "confirm" : idle?.observedAt ? "resume" : undefined;
+    const prompt = action === "confirm" ? dialog : idle;
+    if (active.tool !== "codex" || !active.execution || !session || !prompt?.observedAt || !action) continue;
     const valid = () => !stopped && continueGoals() && generation === retryGeneration &&
       activeExecutions.get(terminal) === active && active.sessionId === session && !!prompt.observedAt;
     try {
@@ -129,10 +132,10 @@ async function pollNetworkGoalResumes(): Promise<void> {
       const key = goal?.status === "paused" ? goalKey(goal) : undefined;
       if (!key) { networkResumePending.delete(terminal); continue; }
       let pending = networkResumePending.get(terminal);
-      if (!pending || pending.turn !== turn.id || pending.goal !== key || pending.revision !== prompt.revision) {
-        pending = { turn: turn.id, due: Date.now() + 15000, goal: key, revision: prompt.revision };
+      if (!pending || pending.turn !== turn.id || pending.goal !== key || pending.revision !== prompt.revision || pending.action !== action) {
+        pending = { turn: turn.id, due: Date.now() + 15000, goal: key, revision: prompt.revision, action };
         networkResumePending.set(terminal, pending);
-        output.appendLine(`Network goal resume scheduled in 15 seconds for ${session}.`);
+        output.appendLine(`Network goal ${action} scheduled in 15 seconds for ${session}.`);
       }
       if (Date.now() < pending.due) continue;
       const revision = prompt.revision;
@@ -140,13 +143,16 @@ async function pollNetworkGoalResumes(): Promise<void> {
       const currentGoal = await codexReader.readGoal(session, active.cwd);
       if (!valid() || prompt.revision !== revision || latest?.id !== pending.turn || !networkPermissionRevoked(latest) ||
           currentGoal?.status !== "paused" || goalKey(currentGoal) !== pending.goal) { networkResumePending.delete(terminal); continue; }
+      const captured = pendingGoals.get(terminal);
+      if (captured && !canContinueGoal(captured.goal, currentGoal)) { networkResumePending.delete(terminal); continue; }
       const claimed = await ledger.claim(session, pending.turn);
       networkResumePending.delete(terminal);
       if (!claimed) { output.appendLine(`Network goal resume already handled or retry limit reached for ${session}.`); continue; }
       if (!valid() || prompt.revision !== revision) continue;
       prompt.invalidate();
-      terminal.sendText("", true); // Enter selects the observed first choice, Resume goal.
-      output.appendLine(`Selected Resume goal after the network permission error for ${session}.`);
+      clearPendingGoal(terminal);
+      terminal.sendText(action === "confirm" ? "" : "/goal resume", true);
+      output.appendLine(`${action === "confirm" ? "Selected Resume goal" : "Sent /goal resume at a fresh idle prompt"} after the network permission error for ${session}.`);
     } catch (error) {
       output.appendLine(`Network goal resume check failed for ${session}: ${String(error)}`);
     }
