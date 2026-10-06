@@ -252,12 +252,14 @@ pub(crate) async fn coordinated_switch(
         if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume_internal(&id, false, reopen_ide).await; }
         return Err("No supported IDE session was captured. Install/enable the companion extension before interrupting Codex.".into());
     }
+    let mut stopped_captured_processes = false;
     let result = async {
         if !running.can_switch {
             if require_capture { crate::mcp::check_switch_policy(account_id,true)?; }
             let id = preparation.as_ref().and_then(|p|p.request_id.as_deref()).ok_or("Missing resume capture")?;
             let terminals = super::ide_bridge::captured_terminal_pids(id).map_err(|e|e.to_string())?;
             let killed = super::process::kill_captured_codex_processes(terminals).await?;
+            stopped_captured_processes = !killed.killed_pids.is_empty();
             if !killed.failed_pids.is_empty() { return Err("Some Codex processes could not be stopped".into()); }
             let mut stopped = false;
             for _ in 0..20 {
@@ -273,8 +275,10 @@ pub(crate) async fn coordinated_switch(
     let mut outcome = SwitchResumeResult { switched: result.is_ok(), resume_requested_sessions: 0,
         resume_verified: false, resume_request_id: preparation.as_ref().and_then(|p| p.request_id.clone()), warning: None };
     if let Some(id) = outcome.resume_request_id.clone() {
-        // Even if switching fails, restore captured terminals on the account still active.
-        match complete_ide_resume_internal(&id, true, reopen_ide).await {
+        // A failed coverage check stopped nothing. Cancel that capture instead
+        // of restarting a healthy CLI on the same exhausted account.
+        let resume = result.is_ok() || stopped_captured_processes;
+        match complete_ide_resume_internal(&id, resume, reopen_ide).await {
             Ok(completion) => outcome.resume_requested_sessions = completion.resumed_sessions,
             Err(error) => outcome.warning = Some(format!("Resume could not be requested: {error}")),
         }

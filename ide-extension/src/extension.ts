@@ -75,6 +75,7 @@ interface ActiveExecution {
   networkResumePrompt?: NetworkResumePrompt;
   updatePrompt?: CodexUpdatePrompt;
   updatePromptLogged?: boolean;
+  codexProcessId?: number;
 }
 
 let bridgeRoot = "";
@@ -396,7 +397,14 @@ function refreshDiscovery(): Promise<void> {
         const matches = processes.filter(entry => entry.ancestors.includes(terminalPid));
         if (matches.length !== 1) continue;
         const entry = matches[0];
-        const sessionId = await codexReader.recentInteractiveSession(entry.cwd);
+        if (active?.codexProcessId === entry.processId && active.sessionId &&
+            path.normalize(active.cwd) === path.normalize(entry.cwd)) {
+          usedSessions.add(active.sessionId);
+          continue;
+        }
+        const sessionId = await codexReader.recentInteractiveSession(entry.cwd, (reason, detail) => {
+          if (reason !== "candidate_found") output.appendLine(`Linux Codex session lookup for PID ${entry.processId}: ${reason} ${JSON.stringify(detail)}.`);
+        });
         if (!sessionId || usedSessions.has(sessionId)) continue;
         const session = await codexReader.interactiveSession(sessionId);
         if (!session || path.normalize(session.cwd) !== path.normalize(entry.cwd)) continue;
@@ -408,7 +416,9 @@ function refreshDiscovery(): Promise<void> {
         active.cwd = entry.cwd;
         active.terminalProcessId = terminalPid;
         active.sessionId = sessionId;
+        active.codexProcessId = entry.processId;
         active.discovered = true;
+        output.appendLine(`Identified Linux Codex PID ${entry.processId} as session ${sessionId} in ${entry.cwd}.`);
       }
       queueHeartbeat();
       return;

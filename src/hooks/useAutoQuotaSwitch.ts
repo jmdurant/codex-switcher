@@ -72,7 +72,10 @@ export function useAutoQuotaSwitch(options: Options) {
         if (switched) {
           recent.current.set(decision.from.id, Date.now() + 5 * 60000);
           setStatus(decision.reason === "expiring_five_hour" ? "Using expiring five-hour quota until a limit exhausts or the window resets." : "Switched successfully. Cooling down for one minute.");
-        } else setStatus("Switch could not complete. Will retry after one minute.");
+        } else {
+          retryAfter.current = Date.now() + 5 * 60000;
+          setStatus("Switch could not complete. Will retry after five minutes.");
+        }
       } catch (error) {
         trace("check_failed", { activeId, error: error instanceof Error ? error.message : String(error) });
         retryAfter.current = Date.now() + 60000;

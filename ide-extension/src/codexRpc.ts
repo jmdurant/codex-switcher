@@ -116,7 +116,7 @@ export class CodexReader {
   async recentInteractiveSession(cwd: string, report?: (reason: string, detail: Record<string, number>) => void): Promise<string | undefined> {
     await this.connect();
     // The daemon may take many seconds to enumerate a large conversation history.
-    const result = await this.request("thread/list", { cwd }, this.listTimeoutMs);
+    const result = await this.request("thread/list", { cwd, limit: 20 }, this.listTimeoutMs);
     if (!Array.isArray(result?.data)) {
       report?.("invalid_thread_list", {});
       return undefined;
