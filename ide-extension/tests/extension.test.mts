@@ -79,15 +79,15 @@ async function capacityScenario(change: string) {
     if (change.startsWith("network_")) {
       if (change === "network_after_switch") module.exports.blockCapacityRetries();
       turn = { id: requestId, status: "failed", error: { codexErrorInfo: "other", message: change === "network_other_error" ? "A different network error" : "Error running remote compact task: Fatal error: application network permission was revoked" }, completedAt: Math.floor(now / 1000) };
-      goal = {threadId:id,objective:"task",createdAt:1,status:change === "network_goal_complete" ? "complete" : "paused",tokenBudget:100,tokensUsed:1};
-      if (change === "network_switch_idle_pending") module.exports.setPendingGoal(terminal, goal);
+      goal = {threadId:id,objective:"task",createdAt:1,status:change === "network_goal_complete" ? "complete" : change.startsWith("network_blocked") ? "blocked" : "paused",tokenBudget:100,tokensUsed:1};
+      if (change === "network_switch_idle_pending" || change === "network_blocked_pending") module.exports.setPendingGoal(terminal, goal);
       ex.push(change.startsWith("network_switch_idle") ? "\r\n› Ask Codex to do anything\r\n" : "1. Resume goal\r\n2. Leave paused\r\n");
       await new Promise(resolve => setTimeout(resolve, 10));
       await module.exports.testNetworkPoll();
       now += 20000;
       if (change === "network_prompt_changed") { ex.push("another prompt"); await new Promise(resolve => setTimeout(resolve, 10)); }
       await module.exports.testNetworkPoll();
-      const expected = change.startsWith("network_switch_idle") ? ["/goal resume"] : ["network_success", "network_after_switch"].includes(change) ? [""] : [];
+      const expected = change.startsWith("network_switch_idle") ? ["/goal resume"] : ["network_success", "network_after_switch", "network_blocked", "network_blocked_pending"].includes(change) ? [""] : [];
       assert.deepEqual(sent, expected);
       await module.exports.testNetworkPoll();
       assert.deepEqual(sent, expected);
@@ -109,7 +109,7 @@ async function capacityScenario(change: string) {
 for (const change of ["success","ask","focused","quota","running","paused","blocked","budget_limited","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
   test(`capacity extension flow: ${change}`, () => capacityScenario(change));
 }
-for (const change of ["network_success","network_after_switch","network_switch_idle","network_switch_idle_pending","network_other_error","network_goal_complete","network_prompt_changed"]) {
+for (const change of ["network_success","network_after_switch","network_blocked","network_blocked_pending","network_switch_idle","network_switch_idle_pending","network_other_error","network_goal_complete","network_prompt_changed"]) {
   test(`network goal resume flow: ${change}`, () => capacityScenario(change));
 }
 

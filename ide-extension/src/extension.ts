@@ -129,7 +129,9 @@ async function pollNetworkGoalResumes(): Promise<void> {
           prompt.observedAt < turn.completedAt! * 1000) { networkResumePending.delete(terminal); continue; }
       const goal = await codexReader.readGoal(session, active.cwd);
       if (!valid()) return;
-      const key = goal?.status === "paused" ? goalKey(goal) : undefined;
+      // A transient network failure may mark the goal blocked while Codex is
+      // already displaying the same Resume goal choice as for a paused goal.
+      const key = goal && ["paused", "blocked"].includes(goal.status) ? goalKey(goal) : undefined;
       if (!key) { networkResumePending.delete(terminal); continue; }
       let pending = networkResumePending.get(terminal);
       if (!pending || pending.turn !== turn.id || pending.goal !== key || pending.revision !== prompt.revision || pending.action !== action) {
@@ -142,9 +144,13 @@ async function pollNetworkGoalResumes(): Promise<void> {
       const latest = await codexReader.latestTurn(session, active.cwd);
       const currentGoal = await codexReader.readGoal(session, active.cwd);
       if (!valid() || prompt.revision !== revision || latest?.id !== pending.turn || !networkPermissionRevoked(latest) ||
-          currentGoal?.status !== "paused" || goalKey(currentGoal) !== pending.goal) { networkResumePending.delete(terminal); continue; }
+          !currentGoal || !["paused", "blocked"].includes(currentGoal.status) || goalKey(currentGoal) !== pending.goal) { networkResumePending.delete(terminal); continue; }
       const captured = pendingGoals.get(terminal);
-      if (captured && !canContinueGoal(captured.goal, currentGoal)) { networkResumePending.delete(terminal); continue; }
+      if (captured && (!captured.goal || captured.goal.fingerprint !== fingerprint(currentGoal) ||
+          captured.goal.tokenBudget !== currentGoal.tokenBudget || currentGoal.tokensUsed < captured.goal.tokensUsed ||
+          (currentGoal.tokenBudget !== null && currentGoal.tokensUsed >= currentGoal.tokenBudget))) {
+        networkResumePending.delete(terminal); continue;
+      }
       const claimed = await ledger.claim(session, pending.turn);
       networkResumePending.delete(terminal);
       if (!claimed) { output.appendLine(`Network goal resume already handled or retry limit reached for ${session}.`); continue; }
