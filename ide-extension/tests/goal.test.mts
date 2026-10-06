@@ -23,6 +23,8 @@ test("resume preserves identity, budget, and accumulated usage", () => {
     ...(["complete", "blocked", "budgetLimited"] as const).map(status => ({ ...goal, status })),
   ]) assert.equal(canContinueGoal(captured, changed), false);
   assert.equal(canContinueGoal(captured, null), false);
+  assert.equal(canContinueGoal(captured, { ...goal, status: "blocked" }, true), true);
+  assert.equal(canContinueGoal(captured, { ...goal, status: "blocked", objective: "Different" }, true), false);
   assert.equal("objective" in captured, false, "bridge does not store the goal objective");
 });
 test("unbudgeted goals stay unbudgeted", () => {

@@ -264,7 +264,7 @@ const acknowledgedRequests = new Set<string>();
 const resumedResponses = new Set<string>();
 const codexReader = new CodexReader();
 const goalPreference = new GoalContinuationPreference(path.join(os.homedir(), ".codex-switcher", "settings.json"));
-interface PendingGoal { sessionId: string; goal: GoalCapture; expiresAt: number; checking: boolean; timer: NodeJS.Timeout }
+interface PendingGoal { sessionId: string; goal: GoalCapture; expiresAt: number; checking: boolean; timer: NodeJS.Timeout; allowBlockedNetworkGoal?: boolean }
 const pendingGoals = new Map<vscode.Terminal, PendingGoal>();
 const dialogCleaners = new Map<vscode.Terminal, GoalDialogCleanup>();
 const cleanupLaunches = new Map<vscode.Terminal, { sessionId: string; fingerprint?: string }>();
@@ -334,7 +334,13 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
       const goal = await within(codexReader.readGoal(pending.sessionId, active.cwd), 3000);
       if (pendingGoals.get(terminal) !== pending || activeExecutions.get(terminal) !== active || !continueGoals() || Date.now() > pending.expiresAt) return;
       if (active.outputRevision !== revision) { pending.checking = false; return; }
-      if (!goal || !canContinueGoal(pending.goal, goal)) {
+      let eligible = !!goal && canContinueGoal(pending.goal, goal, pending.allowBlockedNetworkGoal);
+      if (eligible && goal?.status === "blocked") {
+        const turn = await within(codexReader.latestTurn(pending.sessionId, active.cwd), 3000);
+        eligible = !!turn && networkPermissionRevoked(turn) && Number.isFinite(turn.completedAt) &&
+          Date.now() - turn.completedAt! * 1000 < 15 * 60000;
+      }
+      if (!eligible) {
         clearPendingGoal(terminal);
         output.appendLine("Goal continuation skipped: state, identity, or budget could not be verified.");
         return;
@@ -735,14 +741,21 @@ async function resumeSession(session: CapturedSession, outcomeBase?: string): Pr
   await waitUntilIdle(terminal);
   if (session.tool === "codex" && session.sessionId && session.goal && continueGoals()) {
     const goal = await within(codexReader.readGoal(session.sessionId, session.cwd), 4000);
-    if (goal !== undefined && canContinueGoal(session.goal, goal)) {
+    let eligible = goal !== undefined && canContinueGoal(session.goal, goal);
+    if (!eligible && goal?.status === "blocked" && canContinueGoal(session.goal, goal, true)) {
+      const turn = await within(codexReader.latestTurn(session.sessionId, session.cwd), 4000);
+      eligible = !!turn && networkPermissionRevoked(turn) && Number.isFinite(turn.completedAt) &&
+        Date.now() - turn.completedAt! * 1000 < 15 * 60000;
+      output.appendLine(`Blocked goal after switch for ${session.sessionId}: ${eligible ? "recent network permission failure; awaiting verified resume prompt" : "no matching recent network permission failure"}.`);
+    }
+    if (eligible) {
       clearPendingGoal(terminal);
       const target = terminal;
       const timer = setTimeout(() => {
         clearPendingGoal(target);
         output.appendLine("Goal readiness was not verified within 60 seconds. Continue manually with /goal resume if appropriate.");
       }, 60000);
-      pendingGoals.set(terminal, { sessionId: session.sessionId, goal: session.goal, expiresAt: Date.now() + 60000, checking: false, timer });
+      pendingGoals.set(terminal, { sessionId: session.sessionId, goal: session.goal, expiresAt: Date.now() + 60000, checking: false, timer, allowBlockedNetworkGoal: goal?.status === "blocked" });
     }
   }
   try { await executeResume(terminal, session, outcomeBase); }

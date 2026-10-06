@@ -139,6 +139,7 @@ async function scenario(options: {
   autoDiscover?: boolean; recovered?: boolean;
   ambiguous?: boolean; missingShellCwd?: boolean; goalUnavailable?: boolean; twoUnknown?: boolean; staleShellCwd?: boolean; exitStartup?: boolean;
   clearAtReady?: boolean; clearAfterPrompt?: boolean; expectCleanup?: boolean;
+  networkFailureAtSwitch?: boolean;
 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "switcher-extension-test-"));
   assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir()) + path.sep));
@@ -191,6 +192,7 @@ async function scenario(options: {
     clearInterval: (ms: number) => intervals.delete(ms),
     testSessionCwd: root,
     readTestGoal: (threadId: string) => { if (options.goalUnavailable) throw new Error("goal API unavailable"); return goalCleared ? null : ({ threadId, objective: "Finish existing task", status, tokenBudget: 10000, tokensUsed: 100, createdAt: 1, ...goalChanges }); },
+    readTestTurn: () => options.networkFailureAtSwitch ? { id: requestId, status: "failed", error: { message: "Fatal error: application network permission was revoked" }, completedAt: Math.floor(Date.now() / 1000) } : null,
     getTestOwners: () => owners,
   });
   try {
@@ -304,6 +306,8 @@ test("bridge suppresses YOLO for an explicitly guarded launch", () => scenario({
 test("full bridge recognizes the specific paused-goal startup choice", () => scenario({ readyText: "Resume paused goal?\nMark it active and continue when idle" }));
 test("Codex update choice reopens the exact captured conversation after updater exit", () => scenario({ updatePromptAtReady: true }));
 test("full bridge confirms the numbered resume-goal startup choice", () => scenario({ readyText: "1. Resume goal\n2. Leave paused" }));
+test("network failure during switch permits the captured blocked goal prompt", () => scenario({ beforeLaunch: { status: "blocked" }, readyText: "1. Resume goal\n2. Leave paused", networkFailureAtSwitch: true }));
+test("unrelated blocked goal during switch remains stopped", () => scenario({ beforeLaunch: { status: "blocked" }, readyText: "1. Resume goal\n2. Leave paused", expectContinuation: false }));
 test("a previously paused goal is reopened without automatic continuation", () => scenario({ capturedStatus: "paused" }));
 test("disabling continuation before ready preserves plain exact resume", () => scenario({ disableBeforeReady: true }));
 test("desktop setting disables goal capture and continuation", () => scenario({ disabledAtCapture: true }));

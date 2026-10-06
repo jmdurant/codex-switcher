@@ -31,8 +31,8 @@ export function captureGoal(goal: Goal | null): GoalCapture | undefined {
   if (!goal || !["active", "usageLimited"].includes(goal.status) || (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget)) return undefined;
   return { fingerprint: fingerprint(goal), status: goal.status as GoalCapture["status"], tokenBudget: goal.tokenBudget, tokensUsed: goal.tokensUsed };
 }
-export function canContinueGoal(capture: GoalCapture, goal: Goal | null): boolean {
-  return Boolean(goal && ["active", "paused", "usageLimited"].includes(goal.status) &&
+export function canContinueGoal(capture: GoalCapture, goal: Goal | null, allowBlockedNetworkGoal = false): boolean {
+  return Boolean(goal && (["active", "paused", "usageLimited"].includes(goal.status) || (allowBlockedNetworkGoal && goal.status === "blocked")) &&
     fingerprint(goal) === capture.fingerprint && goal.tokenBudget === capture.tokenBudget &&
     goal.tokensUsed >= capture.tokensUsed && (goal.tokenBudget === null || goal.tokensUsed < goal.tokenBudget));
 }
