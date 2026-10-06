@@ -9,7 +9,7 @@ import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { GoalContinuationPreference } from "./goalPreference";
-import { RetryLedger, RetryPrompt, NetworkResumePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
+import { RetryLedger, RetryPrompt, NetworkResumePrompt, CodexUpdatePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
 import { SESSION_ID, canContinueGoal, captureGoal, fingerprint, goalReadyAction, sessionIdFromStatus, type GoalCapture } from "./goal";
 
 const PROTOCOL_VERSION = 1;
@@ -73,6 +73,8 @@ interface ActiveExecution {
   outputRevision?: number;
   retryPrompt?: RetryPrompt;
   networkResumePrompt?: NetworkResumePrompt;
+  updatePrompt?: CodexUpdatePrompt;
+  updatePromptLogged?: boolean;
 }
 
 let bridgeRoot = "";
@@ -95,6 +97,9 @@ const retryNotified = new Set<string>();
 const retrySent = new Map<string, { turn: string; at: number; warned: boolean }>();
 const retryPending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; generation: number }>();
 const networkResumePending = new Map<vscode.Terminal, { turn: string; due: number; goal: string; revision: number; action: "confirm" | "resume" }>();
+const updatingSessions = new Set<string>();
+const updateChecks = new Set<vscode.Terminal>();
+const updateResumes = new Map<vscode.Terminal, { execution: vscode.TerminalShellExecution; session: CapturedSession }>();
 let networkResumePolling = false;
 
 function retryMode(): string {
@@ -297,6 +302,14 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
       dialogCleaners.get(terminal)?.observe(chunk);
       active.retryPrompt?.observe(chunk);
       active.networkResumePrompt?.observe(chunk);
+      active.updatePrompt?.observe(chunk);
+      if (active.updatePrompt?.observedAt) {
+        if (!active.updatePromptLogged) {
+          active.updatePromptLogged = true;
+          output.appendLine(`Observed Codex update picker in ${terminal.name}; session ${active.sessionId ?? "unknown"}.`);
+        }
+        void acceptVerifiedCodexUpdate(terminal, active);
+      }
       tail = (tail + chunk).slice(-8192);
       // A subsequently displayed different /status invalidates the explicit binding.
       const observedId = sessionIdFromStatus(tail);
@@ -339,6 +352,33 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
       });
     }
   } catch { output.appendLine("Terminal observation ended; automatic goal continuation is unavailable for this execution."); }
+}
+
+async function acceptVerifiedCodexUpdate(terminal: vscode.Terminal, active: ActiveExecution): Promise<void> {
+  const sessionId = active.sessionId;
+  const prompt = active.updatePrompt;
+  if (!active.execution || !sessionId || !prompt?.observedAt || updateChecks.has(terminal) || updatingSessions.has(sessionId)) return;
+  updateChecks.add(terminal);
+  const revision = prompt.revision;
+  try {
+    if (!await codexReader.isInteractiveSession(sessionId, active.cwd)) return;
+    if (stopped || !enabled() || activeExecutions.get(terminal) !== active ||
+        active.sessionId !== sessionId || prompt.revision !== revision || !prompt.observedAt) return;
+    const goal = await codexReader.readGoal(sessionId, active.cwd).catch(() => null);
+    if (stopped || !enabled() || activeExecutions.get(terminal) !== active ||
+        active.sessionId !== sessionId || prompt.revision !== revision || !prompt.observedAt) return;
+    updatingSessions.add(sessionId);
+    updateResumes.set(terminal, { execution: active.execution, session: {
+      tool: "codex", cwd: active.cwd, sessionId, yolo: active.yolo,
+      terminalName: terminal.name, terminalProcessId: active.terminalProcessId,
+      goal: captureGoal(goal),
+    } });
+    prompt.invalidate();
+    terminal.sendText("1", false);
+    output.appendLine(`Selected Codex Update now for verified session ${sessionId}; will resume it after the updater exits.`);
+  } catch (error) {
+    output.appendLine(`Could not verify Codex update prompt for ${sessionId}: ${String(error)}`);
+  } finally { updateChecks.delete(terminal); }
 }
 
 function refreshDiscovery(): Promise<void> {
@@ -821,6 +861,7 @@ export function activate(context: vscode.ExtensionContext): void {
         cwd,
         retryPrompt: tool === "codex" ? new RetryPrompt() : undefined,
         networkResumePrompt: tool === "codex" ? new NetworkResumePrompt() : undefined,
+        updatePrompt: tool === "codex" ? new CodexUpdatePrompt() : undefined,
         yolo: yoloFromCommand(event.execution.commandLine.value),
         resumeLast: isLastResumeCommand(event.execution.commandLine.value),
         sessionId: tool === "codex" ? sessionIdFromCommand(event.execution.commandLine.value) : undefined,
@@ -853,6 +894,8 @@ export function activate(context: vscode.ExtensionContext): void {
       queueHeartbeat();
     }),
     vscode.window.onDidEndTerminalShellExecution((event) => {
+      const update = updateResumes.get(event.terminal);
+      if (update?.execution === event.execution) updateResumes.delete(event.terminal);
       const attempt = resumeAttempts.get(event.terminal);
       if (attempt?.execution === event.execution) {
         resumeAttempts.delete(event.terminal);
@@ -872,11 +915,18 @@ export function activate(context: vscode.ExtensionContext): void {
         clearPendingGoal(event.terminal);
         queueHeartbeat();
       }
+      if (update?.execution === event.execution && !stopped) {
+        output.appendLine(`Codex updater exited with code ${event.exitCode ?? "unknown"}; reopening exact session ${update.session.sessionId}.`);
+        void resumeSession(update.session).catch(error =>
+          output.appendLine(`Could not resume Codex after update: ${String(error)}`));
+      }
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
       resumeAttempts.delete(terminal);
       retryPending.delete(terminal);
       networkResumePending.delete(terminal);
+      updateChecks.delete(terminal);
+      updateResumes.delete(terminal);
       cleanupLaunches.delete(terminal);
       clearDialogCleaner(terminal);
       terminalExecutions.delete(terminal);

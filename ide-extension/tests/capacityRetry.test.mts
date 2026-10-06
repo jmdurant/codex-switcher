@@ -3,7 +3,7 @@ import test from "node:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { overloaded, networkPermissionRevoked, goalKey, retryDelay, RetryPrompt, RetryLedger, NetworkResumePrompt } from "../src/capacityRetry.ts";
+import { overloaded, networkPermissionRevoked, goalKey, retryDelay, RetryPrompt, RetryLedger, NetworkResumePrompt, CodexUpdatePrompt } from "../src/capacityRetry.ts";
 import type { Goal } from "../src/goal.ts";
 const id = "01a0537e-b2f9-7b71-9520-8db14bf0a76f";
 const turn = "01a053b5-c94d-7ce3-8c32-ff2ea32a51cc";
@@ -29,6 +29,17 @@ test("network goal prompt requires both numbered choices and invalidates on new 
   prompt.observe("another prompt"); assert.equal(prompt.observedAt,0);
   prompt.observe("1. Resume goal\r\n2. Leave paused\r\n"); assert.ok(prompt.observedAt);
   prompt.invalidate(); assert.equal(prompt.observedAt,0);
+});
+test("Codex update prompt requires all three choices and invalidates on other output", () => {
+  const prompt = new CodexUpdatePrompt();
+  prompt.observe("Update available · 0.159.3 → 0.160.1\r\n1. Update now\r\n");
+  assert.equal(prompt.observedAt, 0);
+  prompt.observe("2. Skip\r\n3. Skip until next version\r\n");
+  assert.ok(prompt.observedAt);
+  prompt.observe("\x1b]0;spinner\x07");
+  assert.ok(prompt.observedAt);
+  prompt.observe("Unrelated confirmation");
+  assert.equal(prompt.observedAt, 0);
 });
 test("capacity delays increase with bounded jitter", () => {
   assert.deepEqual([0,1,2,3,4,5].map(n=>retryDelay(n,0)),[30000,60000,120000,240000,300000,300000]);

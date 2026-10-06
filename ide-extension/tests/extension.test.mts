@@ -15,7 +15,7 @@ const compiled = await build({
   platform: "node", format: "cjs", external: ["vscode"],
   plugins: [{ name: "mock-codex-reader", setup(builder) {
     builder.onResolve({ filter: /codexRpc$/ }, () => ({ path: "reader", namespace: "test" }));
-    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async interactiveSession() { return { cwd: globalThis.testSessionCwd }; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
+    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async interactiveSession() { return { cwd: globalThis.testSessionCwd }; } async isInteractiveSession() { return true; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
     builder.onResolve({ filter: /sessionDiscovery$/ }, () => ({ path: "discovery", namespace: "discovery-test" }));
     builder.onLoad({ filter: /.*/, namespace: "discovery-test" }, () => ({ contents: `
       export { ownerForTerminal } from ${JSON.stringify(path.resolve("src/sessionDiscovery.ts"))};
@@ -246,6 +246,16 @@ async function scenario(options: {
         await until(async () => (await outcomeFiles()).some(name => name.endsWith("-failed.json")));
         return;
       }
+      if (options.updatePromptAtReady) {
+        resumed!.push("Update available · 0.159.3 → 0.160.1\r\n1. Update now\r\n2. Skip\r\n3. Skip until next version\r\n");
+        await until(() => sent.length === 1);
+        assert.deepEqual(sent, ["1"]);
+        assert.deepEqual(newlines, [false]);
+        events.end({terminal,execution:resumed,exitCode:0});
+        await until(() => launches.length === 2);
+        assert.deepEqual(launches[1], ["codex", "resume", id, "--yolo"]);
+        return;
+      }
       status = "paused";
       goalChanges = { ...goalChanges, ...options.atReady };
       goalCleared = options.clearAtReady ?? false;
@@ -292,6 +302,7 @@ test("bridge preserves explicit YOLO mode", () => scenario({launchMode:"--yolo"}
 test("bridge preserves the long YOLO alias", () => scenario({launchMode:"--dangerously-bypass-approvals-and-sandbox"}));
 test("bridge suppresses YOLO for an explicitly guarded launch", () => scenario({launchMode:"--sandbox workspace-write",expectedYolo:false}));
 test("full bridge recognizes the specific paused-goal startup choice", () => scenario({ readyText: "Resume paused goal?\nMark it active and continue when idle" }));
+test("Codex update choice reopens the exact captured conversation after updater exit", () => scenario({ updatePromptAtReady: true }));
 test("full bridge confirms the numbered resume-goal startup choice", () => scenario({ readyText: "1. Resume goal\n2. Leave paused" }));
 test("a previously paused goal is reopened without automatic continuation", () => scenario({ capturedStatus: "paused" }));
 test("disabling continuation before ready preserves plain exact resume", () => scenario({ disableBeforeReady: true }));

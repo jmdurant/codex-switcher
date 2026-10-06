@@ -34,6 +34,28 @@ export class NetworkResumePrompt {
   }
   invalidate(): void { this.text = ""; this.observedAt = 0; this.revision++; }
 }
+
+/** Recognize only Codex's complete, numbered CLI updater picker. */
+export class CodexUpdatePrompt {
+  private text = "";
+  observedAt = 0;
+  revision = 0;
+  observe(chunk: string): void {
+    if (isNonVisualUpdate(chunk)) return;
+    this.revision++;
+    if (this.observedAt) this.text = "";
+    this.observedAt = 0;
+    const erased = Math.max(chunk.lastIndexOf("\x1b[2J"), chunk.lastIndexOf("\x1b[3J"));
+    if (erased >= 0) { this.text = ""; chunk = chunk.slice(erased + 4); }
+    this.text = (this.text + chunk).slice(-4096);
+    const text = cleanTerminalText(this.text);
+    if (/Update available\b/i.test(text) && /1[.)]\s*Update now\b/i.test(text) &&
+        /2[.)]\s*Skip\b/i.test(text) && /3[.)]\s*Skip until next version\b/i.test(text)) {
+      this.observedAt = Date.now();
+    }
+  }
+  invalidate(): void { this.text = ""; this.observedAt = 0; this.revision++; }
+}
 export function retryDelay(attempt: number, random = Math.random()): number {
   return [30, 60, 120, 240, 300][Math.min(attempt, 4)]! * 1000 + Math.floor(random * 5000);
 }
