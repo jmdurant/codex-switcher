@@ -12,6 +12,7 @@ use crate::auth::{
 };
 use crate::types::{AccountInfo, AuthData, OAuthLoginInfo};
 
+#[derive(Clone)]
 enum PendingOAuthTarget {
     Add,
     Relogin(String),
@@ -25,7 +26,7 @@ fn should_initialize_added_account(active_account_id: Option<&str>) -> bool {
 }
 
 struct PendingOAuth {
-    rx: oneshot::Receiver<anyhow::Result<OAuthLoginResult>>,
+    rx: Option<oneshot::Receiver<anyhow::Result<OAuthLoginResult>>>,
     cancelled: Arc<AtomicBool>,
     server: Arc<Server>,
     target: PendingOAuthTarget,
@@ -66,7 +67,49 @@ fn email_from_account_name(name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{email_from_account_name, should_initialize_added_account};
+    use super::{
+        cancel_login, complete_login, email_from_account_name, should_initialize_added_account,
+        PendingOAuth, PendingOAuthTarget, PENDING_OAUTH,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tiny_http::Server;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn cancel_reaches_a_relogin_waiting_for_the_browser() {
+        let (tx, rx) = oneshot::channel();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server = Arc::new(Server::http("127.0.0.1:0").unwrap());
+        *PENDING_OAUTH.lock().unwrap() = Some(PendingOAuth {
+            rx: Some(rx),
+            cancelled: Arc::clone(&cancelled),
+            server,
+            target: PendingOAuthTarget::Relogin("account-id".to_string()),
+        });
+        let waiter = tokio::spawn(complete_login());
+        for _ in 0..20 {
+            if PENDING_OAUTH
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|flow| flow.rx.is_none())
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(PENDING_OAUTH
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|flow| flow.rx.is_none()));
+        cancel_login().await.unwrap();
+        assert!(cancelled.load(Ordering::Relaxed));
+        drop(tx);
+        assert!(waiter.await.unwrap().is_err());
+        assert!(PENDING_OAUTH.lock().unwrap().is_none());
+    }
 
     #[test]
     fn add_account_carries_email_forward_without_changing_it() {
@@ -139,7 +182,7 @@ async fn start_login_for_target(
     {
         let mut pending = PENDING_OAUTH.lock().unwrap();
         *pending = Some(PendingOAuth {
-            rx,
+            rx: Some(rx),
             cancelled,
             server,
             target,
@@ -152,20 +195,37 @@ async fn start_login_for_target(
 /// Wait for OAuth to complete, then add or replace the requested account.
 #[tauri::command]
 pub async fn complete_login() -> Result<AccountInfo, String> {
-    let pending = {
+    let (rx, target, cancelled) = {
         let mut pending = PENDING_OAUTH.lock().unwrap();
-        pending
-            .take()
-            .ok_or_else(|| "No pending OAuth login".to_string())?
+        let flow = pending
+            .as_mut()
+            .ok_or_else(|| "No pending OAuth login".to_string())?;
+        (
+            flow.rx
+                .take()
+                .ok_or_else(|| "OAuth login is already being completed".to_string())?,
+            flow.target.clone(),
+            Arc::clone(&flow.cancelled),
+        )
     };
 
-    let account = wait_for_oauth_login(pending.rx)
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = wait_for_oauth_login(rx).await.map_err(|e| e.to_string());
+    {
+        let mut pending = PENDING_OAUTH.lock().unwrap();
+        if cancelled.load(Ordering::Relaxed)
+            || pending
+                .as_ref()
+                .is_none_or(|flow| !Arc::ptr_eq(&flow.cancelled, &cancelled))
+        {
+            return Err("OAuth login cancelled or replaced".to_string());
+        }
+        pending.take();
+    }
+    let account = result?;
 
     let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
 
-    let stored = match pending.target {
+    let stored = match target {
         PendingOAuthTarget::Add => {
             let active_before_add = load_accounts()
                 .map_err(|e| e.to_string())?

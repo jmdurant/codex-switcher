@@ -136,6 +136,17 @@ pub struct OAuthLoginResult {
     pub account: StoredAccount,
 }
 
+async fn bind_callback_server(port: u16, attempts: usize) -> Result<Server> {
+    for attempt in 0..attempts {
+        match Server::http(format!("127.0.0.1:{port}")) {
+            Ok(server) => return Ok(server),
+            Err(_) if attempt + 1 < attempts => tokio::time::sleep(Duration::from_millis(100)).await,
+            Err(error) => anyhow::bail!("OAuth callback port {port} is still in use: {error}. Close the previous sign-in and try again"),
+        }
+    }
+    anyhow::bail!("OAuth callback server did not start")
+}
+
 /// Start the OAuth login flow
 pub async fn start_oauth_login(
     account_name: String,
@@ -152,20 +163,10 @@ pub async fn start_oauth_login(
     println!("[OAuth] Starting login for account: {account_name}");
     println!("[OAuth] PKCE challenge: {}", &pkce.code_challenge[..20]);
 
-    // Try official default port first; fall back to a random free port if it is busy.
-    let server = match Server::http(format!("127.0.0.1:{DEFAULT_PORT}")) {
-        Ok(server) => server,
-        Err(default_err) => {
-            println!(
-                "[OAuth] Default callback port {DEFAULT_PORT} unavailable ({default_err}), using a random local port"
-            );
-            Server::http("127.0.0.1:0").map_err(|fallback_err| {
-                anyhow::anyhow!(
-                    "Failed to start OAuth server: default port {DEFAULT_PORT} error: {default_err}; fallback error: {fallback_err}"
-                )
-            })?
-        }
-    };
+    // Cancelled attempts can take a moment to release their listener. This
+    // Codex client uses the fixed callback URI; opening a random port produces
+    // an authorize page that rejects the request.
+    let server = bind_callback_server(DEFAULT_PORT, 30).await?;
 
     let actual_port = match server.server_addr().to_ip() {
         Some(addr) => addr.port(),
@@ -415,6 +416,16 @@ pub async fn wait_for_oauth_login(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn occupied_callback_port_never_uses_a_different_port() {
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = reservation.local_addr().unwrap().port();
+        assert!(bind_callback_server(port, 1).await.is_err());
+        drop(reservation);
+        let server = bind_callback_server(port, 1).await.unwrap();
+        assert_eq!(server.server_addr().to_ip().unwrap().port(), port);
+    }
 
     #[test]
     fn relogin_hint_preserves_email_and_oauth_parameters() {
