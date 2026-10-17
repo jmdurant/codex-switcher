@@ -1,4 +1,11 @@
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|v| v == "--claude-statusline") {
+        if let Some(path) = args.get(2) {
+            let _ = codex_switcher_lib::auth::claude_usage::run_statusline(std::path::Path::new(path));
+        }
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("{error:#}");
         std::process::exit(1);

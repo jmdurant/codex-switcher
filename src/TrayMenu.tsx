@@ -3,9 +3,11 @@ import type {
   AccountInfo,
   AccountUsageStats,
   AntigravityUsageInfo,
+  ClaudeState,
   UsageInfo,
 } from "./types";
 import { invokeBackend, isTauriRuntime } from "./lib/platform";
+import { ClaudeUsageView } from "./components/ClaudeAccounts";
 import {
   applyTheme,
   syncThemeFromStorage,
@@ -142,6 +144,7 @@ function TrayMenu() {
   const [usageById, setUsageById] = useState<Record<string, UsageInfo>>({});
   const [statsById, setStatsById] = useState<Record<string, AccountUsageStats>>({});
   const [antigravityUsage, setAntigravityUsage] = useState<AntigravityUsageInfo | null>(null);
+  const [claudeState, setClaudeState] = useState<ClaudeState | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [autoWarmupAllEnabled, setAutoWarmupAllEnabled] = useState(readAutoWarmupAllEnabled);
 
@@ -227,6 +230,11 @@ function TrayMenu() {
     }
   }, []);
 
+  const loadClaudeUsage = useCallback(async () => {
+    try { setClaudeState(await invokeBackend<ClaudeState>("get_claude_state")); }
+    catch { setClaudeState(null); }
+  }, []);
+
   const load = useCallback(async () => {
     try {
       const list = await invokeBackend<AccountInfo[]>("list_accounts");
@@ -236,12 +244,13 @@ function TrayMenu() {
       void loadUsage(list); // Don't block the list render on the usage calls.
       void loadActiveStats(list);
       void loadAntigravityUsage();
+      void loadClaudeUsage();
     } catch (err) {
       setError(formatError(err));
     } finally {
       setLoading(false);
     }
-  }, [loadActiveStats, loadAntigravityUsage, loadUsage]);
+  }, [loadActiveStats, loadAntigravityUsage, loadClaudeUsage, loadUsage]);
 
   // Manual refresh: re-pull accounts and actively fetch fresh usage once.
   const handleRefresh = useCallback(async () => {
@@ -251,13 +260,13 @@ function TrayMenu() {
       setAccounts(list);
       setUsageById((prev) => retainUsageForAccounts(prev, list));
       setError(null);
-      await Promise.all([loadUsage(list), loadActiveStats(list), loadAntigravityUsage()]);
+      await Promise.all([loadUsage(list), loadActiveStats(list), loadAntigravityUsage(), loadClaudeUsage()]);
     } catch (err) {
       setError(formatError(err));
     } finally {
       setRefreshing(false);
     }
-  }, [loadActiveStats, loadAntigravityUsage, loadUsage]);
+  }, [loadActiveStats, loadAntigravityUsage, loadClaudeUsage, loadUsage]);
 
   const handleAutoWarmupToggle = useCallback(async () => {
     const next = !autoWarmupAllEnabled;
@@ -529,6 +538,12 @@ function TrayMenu() {
           })
         )}
 
+        {claudeState?.usage && (
+          <div className="mt-2 border-t border-gray-100 px-2 pt-2 dark:border-gray-800">
+            <div className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">Claude Code</div>
+            <ClaudeUsageView usage={claudeState.usage} />
+          </div>
+        )}
         {antigravityUsage && (
           <div className="mt-2 border-t border-gray-100 px-2 pt-2 dark:border-gray-800">
             <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">

@@ -1,6 +1,8 @@
 //! Authentication module
 
 pub mod antigravity;
+pub mod claude;
+pub mod claude_usage;
 pub(crate) mod atomic;
 pub(crate) mod operation;
 #[cfg(target_os = "macos")]

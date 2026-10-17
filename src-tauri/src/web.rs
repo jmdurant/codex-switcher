@@ -62,6 +62,12 @@ struct LoginArgs {
     account_name: String,
 }
 
+#[derive(Deserialize)]
+struct ClaudeCaptureArgs { name: String }
+
+#[derive(Deserialize)]
+struct ClaudeTrackingArgs { enabled: bool }
+
 #[derive(Debug, Deserialize)]
 struct ImportSlimArgs {
     payload: String,
@@ -148,6 +154,23 @@ fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> a
 
 async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, String> {
     match command {
+        "get_claude_state" => to_json(crate::commands::claude::get_claude_state().await?),
+        "capture_claude_account" => {
+            let args: ClaudeCaptureArgs = parse_args(payload)?;
+            to_json(crate::commands::claude::capture_claude_account(args.name).await?)
+        }
+        "switch_claude_account" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(crate::commands::claude::switch_claude_account(args.account_id).await?)
+        }
+        "delete_claude_account" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(crate::commands::claude::delete_claude_account(args.account_id).await?)
+        }
+        "set_claude_usage_tracking" => {
+            let args: ClaudeTrackingArgs = parse_args(payload)?;
+            to_json(crate::commands::claude::set_claude_usage_tracking(args.enabled).await?)
+        }
         "list_accounts" => to_json(list_accounts().await?),
         "get_active_account_info" => to_json(get_active_account_info().await?),
         "add_account_from_file" => {

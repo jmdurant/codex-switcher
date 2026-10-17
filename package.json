@@ -1,8 +1,8 @@
 {
   "name": "codex-switcher",
   "private": true,
-  "version": "0.2.17",
-  "description": "A multi-account manager for Codex, Antigravity, and agy",
+  "version": "0.2.18",
+  "description": "A multi-account manager for Codex, Antigravity, agy, and Claude Code",
   "type": "module",
   "scripts": {
     "dev": "vite",

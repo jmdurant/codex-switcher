@@ -7,6 +7,7 @@ pub(crate) mod daemon_auth;
 pub mod current_login;
 pub mod account_stats;
 pub mod antigravity;
+pub mod claude;
 pub mod ide_bridge;
 pub mod oauth;
 pub mod process;

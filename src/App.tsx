@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
-import { AccountCard, AddAccountModal, AntigravityAccounts, CurrentCodexLogin, UpdateChecker } from "./components";
+import { AccountCard, AddAccountModal, AntigravityAccounts, ClaudeAccounts, CurrentCodexLogin, UpdateChecker } from "./components";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -2383,6 +2383,7 @@ function App() {
           </div>
         )}
         <AntigravityAccounts />
+        <ClaudeAccounts />
       </main>
 
       {/* Refresh Success Toast */}

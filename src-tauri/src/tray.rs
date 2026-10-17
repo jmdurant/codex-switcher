@@ -31,6 +31,8 @@ static TRAY_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(
 static TRAY_SWITCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static ANTIGRAVITY_USAGE: LazyLock<Mutex<Option<AntigravityUsageInfo>>> =
     LazyLock::new(|| Mutex::new(None));
+static CLAUDE_USAGE: LazyLock<Mutex<Option<crate::auth::claude_usage::ClaudeUsage>>> =
+    LazyLock::new(|| Mutex::new(None));
 
 const TRAY_ID: &str = "codex-switcher-tray";
 const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
@@ -87,6 +89,7 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
     watch_accounts_file(app.clone());
     poll_active_account_usage(app.clone());
     poll_antigravity_usage(app.clone());
+    poll_claude_usage(app.clone());
     Ok(())
 }
 
@@ -260,6 +263,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, store: &AccountsStore) -> tauri::R
     }
 
     append_antigravity_usage(app, &menu)?;
+    append_claude_usage(app, &menu)?;
 
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     #[cfg(target_os = "macos")]
@@ -641,6 +645,30 @@ fn poll_antigravity_usage<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
+fn poll_claude_usage<R: Runtime>(app: AppHandle<R>) {
+    std::thread::spawn(move || loop {
+        let usage = crate::auth::claude::state().ok().and_then(|state| state.usage);
+        if let Ok(mut cache) = CLAUDE_USAGE.lock() { *cache = usage; }
+        refresh_menu(&app);
+        std::thread::sleep(Duration::from_secs(60));
+    });
+}
+
+fn append_claude_usage<R: Runtime>(app: &AppHandle<R>, menu: &Menu<R>) -> tauri::Result<()> {
+    let Some(usage) = CLAUDE_USAGE.lock().ok().and_then(|v| v.clone()) else { return Ok(()); };
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
+    menu.append(&MenuItemBuilder::with_id("claude:heading", "Claude Code").enabled(false).build(app)?)?;
+    let now = chrono::Utc::now().timestamp();
+    for (id, name, window) in [("five-hour", "5-hour", usage.five_hour), ("weekly", "Weekly", usage.seven_day)] {
+        if let Some(window) = window.filter(|v| v.resets_at > now) {
+            let stale = now.saturating_sub(usage.observed_at) > 300;
+            let label = format!("{name}: {:.0}% left{}", 100.0 - window.used_percent, if stale { " (last reported)" } else { "" });
+            menu.append(&MenuItemBuilder::with_id(format!("claude:{id}"), label).enabled(false).build(app)?)?;
+        }
+    }
+    Ok(())
+}
+
 fn append_antigravity_usage<R: Runtime>(app: &AppHandle<R>, menu: &Menu<R>) -> tauri::Result<()> {
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(
@@ -687,7 +715,7 @@ fn append_antigravity_usage<R: Runtime>(app: &AppHandle<R>, menu: &Menu<R>) -> t
 fn default_antigravity_models(
     usage: &AntigravityUsageInfo,
 ) -> Vec<&crate::auth::AntigravityModelUsage> {
-    ["flash", "pro", "claude"]
+    ["argon", "flash", "pro", "claude"]
         .into_iter()
         .filter_map(|group| {
             usage

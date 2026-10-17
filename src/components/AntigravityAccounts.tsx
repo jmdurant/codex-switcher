@@ -59,7 +59,7 @@ function compareModelVersions(left: string, right: string): number {
 }
 
 function defaultVisibleModelIds(models: AntigravityUsageInfo["models"]): Set<string> {
-  const groups = ["flash", "pro", "claude"];
+  const groups = ["argon", "flash", "pro", "claude"];
   return new Set(
     groups.flatMap((group) => {
       const matches = models.filter((model) => model.label.toLowerCase().includes(group));

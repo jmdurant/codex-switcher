@@ -24,6 +24,39 @@ export interface AntigravityAccountInfo {
   last_used_at: string | null;
 }
 
+export interface ClaudeAccountInfo {
+  id: string;
+  name: string;
+  email: string | null;
+  plan: string | null;
+  is_selected: boolean;
+  matches_login: boolean;
+  needs_login: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
+
+export interface ClaudeUsageWindow {
+  used_percent: number;
+  resets_at: number;
+}
+
+export interface ClaudeUsage {
+  observed_at: number;
+  stale: boolean;
+  five_hour: ClaudeUsageWindow | null;
+  seven_day: ClaudeUsageWindow | null;
+}
+
+export interface ClaudeState {
+  accounts: ClaudeAccountInfo[];
+  current_email: string | null;
+  config_directory: string;
+  warning: string | null;
+  usage_tracking_enabled: boolean;
+  usage: ClaudeUsage | null;
+}
+
 export interface AntigravityModelUsage {
   label: string;
   model_id: string;

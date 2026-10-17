@@ -4,4 +4,5 @@ export { AddAccountModal } from "./AddAccountModal";
 export { AccountUsageStats } from "./AccountUsageStats";
 export { UpdateChecker } from "./UpdateChecker";
 export { AntigravityAccounts } from "./AntigravityAccounts";
+export { ClaudeAccounts } from "./ClaudeAccounts";
 export { CurrentCodexLogin } from "./CurrentCodexLogin";

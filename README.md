@@ -5,7 +5,7 @@
 <h1 align="center">AI Account Switcher</h1>
 
 <p align="center">
-  A desktop application for managing multiple AI coding accounts across Codex and Antigravity<br>
+  A desktop application for managing multiple AI coding accounts across Codex, Antigravity, and Claude Code<br>
   Switch accounts, monitor live usage, schedule warm-ups, and stay in control of your quota
 </p>
 
@@ -25,6 +25,7 @@
 - **IDE Terminal Resume (experimental)** – With the companion extension installed, resume Codex and `agy` sessions in VS Code or Antigravity integrated terminals after a forced profile switch
 - **Dual Login Mode** – Authenticate with ChatGPT OAuth or import existing `auth.json` files
 - **Antigravity / Gemini Sessions** – Capture and switch Antigravity desktop sessions; the `agy` CLI uses the same selected session
+- **Claude Code Accounts** – Capture and switch subscription logins, preserve refreshed credentials, and display reported 5-hour and weekly limits in the app and tray
 
 ## Installation
 
@@ -303,7 +304,55 @@ Timed warm-up checks the schedule every 30 seconds, runs each configured minute
 only once per day, and skips missed times if the machine was asleep instead of
 warming accounts late.
 
+## Claude Code
+
+The **Claude Code** section manages subscription logins on Windows, macOS, and
+Linux/Unix. Sign in using `claude auth login`, quit all Claude Code sessions, and
+choose **Capture Session**. Capturing the same account and organization again
+updates its saved credentials. To use another captured account, quit Claude,
+choose **Switch**, then restart Claude Code. The switcher verifies the saved
+credentials; running sessions must be restarted to load them.
+
+Credentials use Claude's standard `.credentials.json` on Windows/Linux and
+Keychain on macOS, with Claude's file fallback when no Keychain entry exists.
+An absolute `CLAUDE_CONFIG_DIR` is supported; each configuration has its own
+saved accounts. A separate `CLAUDE_SECURESTORAGE_CONFIG_DIR` is currently rejected
+to avoid changing a different credential store. API keys, cloud providers, and
+authentication overrides are outside subscription switching. Settings supplied
+by a terminal, project, or organization can still override the selected login.
+
+Only the Claude OAuth login and account metadata are switched. MCP credentials,
+projects, and preferences are preserved. Refreshed credentials are saved before
+switching away, and an interrupted or failed switch can restore the previous
+login. **Remove** deletes the saved snapshot without signing out Claude.
+Snapshots contain credentials and are stored privately under
+`~/.codex-switcher/claude/`; keep that directory private, like Claude's own login
+files. These snapshots are separate from the existing Codex import/export.
+
+Choose **Enable usage tracking** to collect the documented
+[Claude Code status-line rate limits](https://code.claude.com/docs/en/statusline#available-data).
+This preserves and forwards input to an existing status-line command; disabling
+tracking restores it. Windows uses Git Bash, as Claude Code does. Restart Claude
+and send a message: subscription usage is reported after a response, rather than
+polled from an OAuth endpoint. Missing windows remain unavailable, expired
+windows disappear, and observations older than five minutes are marked as old.
+The collector stores quota percentages, reset times, observation times, and an
+account/session binding; it does not store prompts or transcripts. A project
+status-line override can prevent the user-level collector from running.
+
+Claude switching does not force-close or automatically resume sessions, and is
+not included in Codex auto-switching. Native macOS Keychain and Unix process
+checks require validation on those systems; the local integration checks were
+performed on Windows with isolated test credentials.
+
 ## Antigravity / Gemini
+
+The quota display defaults to the latest reported Argon, Flash, Pro, and Claude
+models. Model names, IDs, and quota values come from the running Antigravity
+session, including Gemini 4 Argon variants when available. Use **Choose displayed
+models** to change the selection; saved visibility choices are preserved.
+[Argon availability](https://www.antigravity.google/docs/models/) depends on the
+account and Antigravity product. Only models reported by that session appear.
 
 On Windows and macOS, the **Antigravity / Gemini** section captures the currently
 signed-in Antigravity session and lets you switch between captured sessions.
