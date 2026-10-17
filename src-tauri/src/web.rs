@@ -26,6 +26,17 @@ struct AccountIdArgs {
     account_id: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SwitchArgs {
+    account_id: String,
+    reopen_ide: Option<bool>,
+    expected_active: Option<String>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResumeStatusArgs { request_id: String, expected: usize }
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RedeemResetArgs {
@@ -172,6 +183,15 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "switch_account" => {
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(switch_account(args.account_id, None).await?)
+        }
+        "switch_account_with_resume" => {
+            let args: SwitchArgs = parse_args(payload)?;
+            to_json(crate::commands::switch_account_with_resume(args.account_id, args.reopen_ide, args.expected_active).await?)
+        }
+        "get_current_codex_login" => to_json(crate::commands::get_current_codex_login().await?),
+        "get_switch_resume_status" => {
+            let args: ResumeStatusArgs = parse_args(payload)?;
+            to_json(crate::commands::get_switch_resume_status(args.request_id, args.expected).await?)
         }
         "delete_account" => {
             let args: AccountIdArgs = parse_args(payload)?;

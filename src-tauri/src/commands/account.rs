@@ -1,11 +1,10 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, clear_current_auth, create_chatgpt_account_from_refresh_token,
+    add_account, create_chatgpt_account_from_refresh_token,
     ensure_chatgpt_tokens_fresh_locked, get_active_account, import_from_auth_json,
     import_from_auth_json_contents, load_accounts, read_current_auth, remove_account_from_store,
-    save_accounts, set_active_account, switch_to_account, sync_active_account_tokens,
-    touch_account, with_accounts_store, AUTH_OPERATION_LOCK,
+    save_accounts, sync_active_account_tokens, with_accounts_store,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -25,12 +24,6 @@ use sha2::Sha256;
 use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 const SLIM_EXPORT_PREFIX: &str = "css1.";
 const SLIM_FORMAT_VERSION: u8 = 1;
@@ -129,20 +122,26 @@ pub async fn add_account_from_auth_json_text(
 
 /// Switch to a different account
 #[tauri::command]
-pub async fn switch_account(account_id: String, force: Option<bool>) -> Result<(), String> {
-    switch_account_by_id(&account_id, force.unwrap_or(false)).await
+pub async fn switch_account(account_id: String, force: Option<bool>) -> Result<SwitchResumeResult, String> {
+    let _guard = SWITCH_SEQUENCE_LOCK.lock().await;
+    if !force.unwrap_or(false) { ensure_codex_not_running()?; }
+    coordinated_switch(&account_id, None, false, true).await
 }
 
 pub async fn switch_account_by_id(account_id: &str, force: bool) -> Result<(), String> {
     let _switch_guard = SWITCH_SEQUENCE_LOCK.lock().await;
-    switch_account_inner(account_id, force).await
+    if !force { ensure_codex_not_running()?; }
+    coordinated_switch(account_id, None, false, true).await.map(|_| ())
 }
 
 pub(crate) static SWITCH_SEQUENCE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), String> {
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+async fn switch_account_inner(account_id: &str, expected_active: Option<&str>, protect_live_login: bool) -> Result<bool, String> {
+    let _auth_guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
     let mut store = load_accounts().map_err(|e| e.to_string())?;
+    if store.active_account_id.as_deref() != expected_active {
+        return Err("Active account changed during switch preparation; retry with the current selection.".into());
+    }
 
     let target_index = store
         .accounts
@@ -150,10 +149,15 @@ async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), Strin
         .position(|account| account.id == account_id)
         .ok_or_else(|| format!("Account not found: {account_id}"))?;
 
-    // When force=false (default, tray native menu path) we still guard.
-    // When force=true (user confirmed the dialog in the React UI) we skip.
-    if !force {
-        ensure_codex_not_running()?;
+    ensure_codex_not_running()?;
+    if protect_live_login {
+        let live = super::current_login::read_live_account().map_err(|e| e.to_string())?
+            .ok_or("Codex was signed out during switch preparation; automatic activation was cancelled")?;
+        let selected = store.accounts.iter().find(|account| Some(account.id.as_str()) == expected_active);
+        if !selected.is_some_and(|account| super::current_login::same_login(account, &live)) {
+            return Err("Codex login changed during switch preparation; automatic activation was cancelled".into());
+        }
+        super::daemon_auth::verify_active(&live).await.map_err(|e| e.to_string())?;
     }
 
     // ChatGPT rotates single-use refresh tokens. Preserve the latest token
@@ -168,38 +172,8 @@ async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), Strin
         .await
         .map_err(|e| e.to_string())?;
 
-    // Write to ~/.codex/auth.json
-    switch_to_account(&account).map_err(|e| e.to_string())?;
-
-    // Reopening a TUI reconnects to the same cached daemon login. Explicitly
-    // hand off credentials and verify its identity before marking selection.
-    super::daemon_auth::activate(&account).await.map_err(|e|
-        format!("Credentials were written, but the running Codex account could not be verified: {e}. Retry Activate before continuing"))?;
-
-    // Update the active account in our store
-    set_active_account(account_id).map_err(|e| e.to_string())?;
-
-    // Update last_used_at
-    touch_account(account_id).map_err(|e| e.to_string())?;
-
-    // Restart Antigravity background process if it is running
-    if let Ok(pids) = find_antigravity_processes() {
-        for pid in pids {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .output();
-            }
-            #[cfg(windows)]
-            {
-                let _ = crate::commands::process::windows_system32_command("taskkill.exe")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output();
-            }
-        }
-    }
+    let verified = super::activation::activate(&super::activation::ActivationFiles::local().map_err(|e| e.to_string())?, &account, &super::activation::Daemon)
+        .await.map_err(|e| format!("{e:#}"))?;
 
     // If the user enabled "Open Codex after switch", launch it now.
     if crate::auth::load_app_settings()
@@ -209,12 +183,13 @@ async fn switch_account_inner(account_id: &str, force: bool) -> Result<(), Strin
         let _ = crate::commands::process::open_codex_app_blocking();
     }
 
-    Ok(())
+    Ok(verified)
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct SwitchResumeResult {
     pub switched: bool,
+    pub activation_verified: bool,
     pub resume_requested_sessions: usize,
     pub resume_verified: bool,
     pub resume_request_id: Option<String>,
@@ -225,9 +200,10 @@ pub struct SwitchResumeResult {
 pub async fn switch_account_with_resume(
     account_id: String,
     reopen_ide: Option<bool>,
+    expected_active: Option<String>,
 ) -> Result<SwitchResumeResult, String> {
     let _guard = SWITCH_SEQUENCE_LOCK.lock().await;
-    coordinated_switch(&account_id, None, false, reopen_ide.unwrap_or(true)).await
+    coordinated_switch(&account_id, expected_active.as_deref(), false, reopen_ide.unwrap_or(true)).await
 }
 
 /// Caller holds SWITCH_SEQUENCE_LOCK for the complete capture/close/switch/release sequence.
@@ -238,6 +214,13 @@ pub(crate) async fn coordinated_switch(
     reopen_ide: bool,
 ) -> Result<SwitchResumeResult, String> {
     use super::{check_codex_processes, complete_ide_resume_internal, prepare_ide_resume};
+    let _process_guard = crate::auth::operation::lock_file(&crate::auth::get_config_dir()
+        .map_err(|e| e.to_string())?.join("switch-sequence.lock")).map_err(|e| e.to_string())?;
+    {
+        let _auth = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
+        super::activation::recover(&super::activation::ActivationFiles::local().map_err(|e| e.to_string())?, &super::activation::Daemon)
+            .await.map_err(|e| format!("Pending switch recovery failed: {e:#}"))?;
+    }
     let store = load_accounts().map_err(|e| e.to_string())?;
     if expected_active.is_some() && store.active_account_id.as_deref() != expected_active {
         return Err("Active account changed since the request; refresh quota options.".into());
@@ -250,11 +233,14 @@ pub(crate) async fn coordinated_switch(
     let preparation = if running.can_switch { None } else { Some(prepare_ide_resume("codex".into()).await?) };
     if !running.can_switch && preparation.as_ref().is_none_or(|p| p.captured_sessions == 0) {
         if let Some(id) = preparation.and_then(|p| p.request_id) { let _ = complete_ide_resume_internal(&id, false, reopen_ide).await; }
-        return Err("No supported IDE session was captured. Install/enable the companion extension before interrupting Codex.".into());
+        return Err("No supported IDE session was captured. Update the companion extension and reload the editor, then run /status or use Link Codex Session in each Codex terminal before retrying.".into());
     }
     let mut stopped_captured_processes = false;
     let result = async {
         if !running.can_switch {
+            if load_accounts().map_err(|e| e.to_string())?.active_account_id != store.active_account_id {
+                return Err("Active account changed during capture; no sessions were stopped.".into());
+            }
             if require_capture { crate::mcp::check_switch_policy(account_id,true)?; }
             let id = preparation.as_ref().and_then(|p|p.request_id.as_deref()).ok_or("Missing resume capture")?;
             let terminals = super::ide_bridge::captured_terminal_pids(id).map_err(|e|e.to_string())?;
@@ -270,9 +256,9 @@ pub(crate) async fn coordinated_switch(
         }
         // Check again, rather than force past a process started during preparation.
         if require_capture { crate::mcp::check_switch_policy(account_id,false)?; }
-        switch_account_inner(account_id, false).await
+        switch_account_inner(account_id, store.active_account_id.as_deref(), expected_active.is_some()).await
     }.await;
-    let mut outcome = SwitchResumeResult { switched: result.is_ok(), resume_requested_sessions: 0,
+    let mut outcome = SwitchResumeResult { switched: result.is_ok(), activation_verified: result.as_ref().copied().unwrap_or(false), resume_requested_sessions: 0,
         resume_verified: false, resume_request_id: preparation.as_ref().and_then(|p| p.request_id.clone()), warning: None };
     if let Some(id) = outcome.resume_request_id.clone() {
         // A failed coverage check stopped nothing. Cancel that capture instead
@@ -283,27 +269,43 @@ pub(crate) async fn coordinated_switch(
             Err(error) => outcome.warning = Some(format!("Resume could not be requested: {error}")),
         }
     }
-    result.map_err(|error| format!("{error}. Captured sessions were released for resume; startup is not verified."))?;
+    result.map_err(|error| if stopped_captured_processes {
+        format!("{error}. Resume was requested for stopped sessions; startup is not verified. {}", outcome.warning.as_deref().unwrap_or(""))
+    } else { error })?;
+    if outcome.warning.is_none() {
+        outcome.warning = if outcome.resume_requested_sessions > 0 {
+            Some("Account activated. Session resume was requested; startup is not yet verified.".into())
+        } else if !outcome.activation_verified {
+            Some("Credentials saved. No running Codex daemon was available to verify; the next Codex launch will use this account.".into())
+        } else { None };
+    }
     Ok(outcome)
 }
 
 /// Remove an account
 #[tauri::command]
 pub async fn delete_account(account_id: String) -> Result<(), String> {
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
-    with_accounts_store(|store| {
-        let removal = remove_account_from_store(store, &account_id)?;
-        if removal.removed_is_active {
-            if let Some(account) = &removal.replacement {
-                switch_to_account(account)?;
-            } else {
-                clear_current_auth()?;
-            }
+    let _switch_guard = SWITCH_SEQUENCE_LOCK.lock().await;
+    let _process = crate::auth::operation::lock_file(&crate::auth::get_config_dir()
+        .map_err(|e| e.to_string())?.join("switch-sequence.lock")).map_err(|e| e.to_string())?;
+    let _auth_guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
+    let files = super::activation::ActivationFiles::local().map_err(|e| e.to_string())?;
+    super::activation::recover(&files, &super::activation::Daemon).await.map_err(|e| format!("{e:#}"))?;
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    let account = store.accounts.iter().find(|account|account.id == account_id).ok_or("Account not found")?;
+    if store.active_account_id.as_deref() == Some(&account_id) {
+        ensure_codex_not_running()?;
+        if let Some(replacement) = store.accounts.iter().find(|account|account.id != account_id) {
+            let replacement = ensure_chatgpt_tokens_fresh_locked(replacement).await.map_err(|e| e.to_string())?;
+            super::activation::activate(&files, &replacement, &super::activation::Daemon).await.map_err(|e|format!("{e:#}"))?;
+        } else {
+            super::activation::deactivate(&files, account, &super::activation::Daemon).await.map_err(|e|format!("{e:#}"))?;
         }
+    }
+    with_accounts_store(|store| {
+        remove_account_from_store(store, &account_id)?;
         Ok(())
-    })
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    }).map_err(|e| e.to_string())
 }
 
 /// Rename an account
@@ -393,71 +395,6 @@ pub async fn import_accounts_full_encrypted_bytes(
     let (merged, summary) = merge_accounts_store(current, imported);
     save_accounts(&merged).map_err(|e| e.to_string())?;
     Ok(summary)
-}
-
-/// Find all running Antigravity codex assistant processes
-fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
-    let mut pids = Vec::new();
-
-    #[cfg(unix)]
-    {
-        // Use ps with custom format to get the pid and full command line
-        let output = std::process::Command::new("ps")
-            .args(["-eo", "pid,command"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines().skip(1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            if let Some((pid_str, command)) = line.split_once(' ') {
-                let pid_str = pid_str.trim();
-                let command = command.trim();
-
-                // Antigravity processes have a specific path format
-                let is_antigravity = (command.contains(".antigravity/extensions/openai.chatgpt")
-                    || command.contains(".vscode/extensions/openai.chatgpt"))
-                    && (command.ends_with("codex app-server --analytics-default-enabled")
-                        || command.contains("/codex app-server"));
-
-                if is_antigravity {
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Use tasklist on Windows
-        // For Windows we might need a more precise WMI query to get command line args,
-        // but for now we look for codex.exe PIDs and verify they're not ours
-        let output = crate::commands::process::windows_system32_command("tasklist.exe")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() > 1 {
-                let name = parts[0].trim_matches('"').to_lowercase();
-                if name == "codex.exe" {
-                    let pid_str = parts[1].trim_matches('"');
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(pids)
 }
 
 fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<String> {

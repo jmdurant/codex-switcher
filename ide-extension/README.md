@@ -1,9 +1,28 @@
 # AI Account Switcher Resume
 
+## Switching reliability (0.2.26)
+
+- Exact IDs come from an explicit `codex resume <UUID>`, verified `/status`
+  output, manual linking, or a process-owned conversation writer lock.
+- Shared daemon locks do not identify an individual terminal. Unlinked sessions
+  block interruption; directory and conversation recency are never used to guess.
+- Linux reads process cwd and open descriptors through `/proc`. macOS and other
+  Unix hosts use `ps` and `lsof`. Windows uses Restart Manager and process ancestry.
+- Captured launch options and the Codex executable are retained. Unknown
+  permission settings do not enable YOLO. Complex options need shell integration.
+- After editor reload, use **AI Account Switcher: Link Codex Session** if a daemon
+  session cannot be rediscovered. Enter its `/status` ID and, when requested, the
+  original launch command so the extension can preserve its options.
+- Account activation, resume dispatch, verified startup, and failed startup are
+  separate states in the desktop app. Sending a command is not startup verification.
+
+Install this companion alongside desktop version 0.2.17, then reload the editor
+window to activate the updated extension. Remote extension hosts remain disabled.
+
 ## Temporary capacity retries (0.2.4)
 
-Set **AI Account Switcher Resume: Capacity Retry** to `off`, `ask` (default), or
-`automatic`. Ask offers **Copy continue**, which copies that text and focuses the
+Set **AI Account Switcher Resume: Capacity Retry** to `off`, `ask`, or
+`automatic` (default). Ask offers **Copy continue**, which copies that text and focuses the
 terminal for you to review and submit. It does not press Enter.
 
 Automatic reads the newest persisted turn every seven seconds and responds only
@@ -86,19 +105,20 @@ message before Codex persists the conversation for API verification.
 Discovery requires the CLI's `thread-writer-locks` layout (verified with 0.153.4),
 Windows PowerShell/CIM, and access to query lock ownership. These are local
 implementation details, not a stable Codex API contract. Unknown or ambiguous
-ownership stays unidentified. macOS/Linux retain explicit-resume identification
-and the manual fallback below. Goal continuation remains opt-in.
+ownership stays unidentified. On modern shared-daemon sessions use the exact
+identification methods described above. Goal continuation follows the desktop setting.
 
 ### Manual fallback
 
-For a Codex terminal launched while this extension is active:
+For a Codex terminal, including one restored after an editor reload:
 
 1. Run `/status` in Codex and copy its Session ID.
 2. Keep that terminal selected and run **AI Account Switcher: Link Codex Session**
    from the command palette.
-3. Paste the ID. The extension verifies the session against the terminal's
-   working directory using the local Codex App Server API.
-4. Enable **Continue Interrupted Goals** in the extension settings.
+3. Paste the ID. The extension verifies that it is an interactive session using
+   the local Codex App Server API and reads its working directory. If launch
+   settings were not observed, enter the original launch command when requested.
+4. Configure **Continue running goals after switch** in the desktop app settings.
 
 An explicit `codex resume <UUID>` invocation is recognized automatically. Each
 subsequent switch uses that same UUID. Separate linked sessions in the same
@@ -107,10 +127,8 @@ launched twice. Windows discovery rechecks conversation ownership; other
 platforms require relinking after interactive conversation changes. The extension
 also invalidates a binding when later `/status` output shows a different ID.
 
-With goal continuation enabled, an unidentified Codex session is not relaunched
-using `--last`: the extension reports the missing identity instead of guessing.
-With the setting off, ordinary unidentified sessions retain the previous
-`codex resume --last` behavior. `agy` continues to use `agy --continue`.
+An unidentified Codex session is excluded from capture regardless of the goal
+continuation setting. `agy` continues to use `agy --continue`.
 
 ### Continuation rules
 

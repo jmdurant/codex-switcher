@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand } from "../src/session.ts";
+import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, launchFromCommand, hasShellSafeArguments } from "../src/session.ts";
+
+test("global launch options do not hide the exact resume session", () => {
+  const id = "01991234-1234-7123-8123-123456789abc";
+  assert.equal(sessionIdFromCommand(`codex --profile work --no-daemon resume --model test ${id}`), id);
+  assert.equal(yoloFromCommand(`codex --profile work resume ${id} --yolo`), true);
+  assert.equal(isLastResumeCommand("codex --profile work resume --last"), true);
+});
+
+test("shell expansion and compound launches require explicit literal settings", () => {
+  for (const command of ["codex --profile $PROFILE", "codex --model `model`", "codex --yolo; other-command", "codex --profile $(command)"]) {
+    assert.throws(() => launchFromCommand(command), /shell expansions/);
+  }
+});
 
 test("recognizes Codex and agy commands launched from common Windows shells", () => {
   assert.equal(classifyCommand("codex"), "codex");
@@ -21,8 +34,8 @@ test("does not treat unrelated commands as resumable agents", () => {
 test("resume commands are fixed and do not contain captured shell text", () => {
   assert.deepEqual(resumeInvocation("codex"), {
     executable: "codex",
-    args: ["resume", "--last", "--yolo"],
-    commandLine: "codex resume --last --yolo",
+    args: ["resume", "--last"],
+    commandLine: "codex resume --last",
   });
   assert.deepEqual(resumeInvocation("agy"), {
     executable: "agy",
@@ -52,15 +65,40 @@ test("captures YOLO aliases and explicit guarded launches without reading prompt
   for (const command of ["codex", "agy --yolo", 'codex "explain --yolo"', "codex -- --yolo", "codex -m --yolo", "codex --profile personal"]) assert.equal(yoloFromCommand(command), undefined);
 });
 
-test("unknown captures default to YOLO while explicit guarded captures suppress it", () => {
+test("unknown captures retain configured permissions rather than enabling YOLO", () => {
   const id = "01991234-1234-7123-8123-123456789abc";
-  for (const mode of [true, undefined]) {
+  for (const mode of [true]) {
     assert.deepEqual(resumeInvocation("codex", id, mode).args, ["resume", id, "--yolo"]);
     assert.equal(resumeInvocation("codex", id, mode).commandLine, `codex resume ${id} --yolo`);
   }
   assert.deepEqual(resumeInvocation("codex", id, false).args, ["resume", id]);
+  assert.deepEqual(resumeInvocation("codex", id, undefined).args, ["resume", id]);
   assert.equal(resumeInvocation("codex", undefined, false).commandLine, "codex resume --last");
   assert.equal(resumeInvocation("agy", undefined, true).commandLine, "agy --continue");
+});
+
+test("restart preserves daemon, profile, model and explicit permission settings", () => {
+  const id = "01991234-1234-7123-8123-123456789abc";
+  const launch = launchFromCommand(`codex --no-daemon resume ${id} --profile work --model sample-model --sandbox workspace-write --ask-for-approval on-request --add-dir ../shared`);
+  const invocation = resumeInvocation("codex", id, true, launch);
+  assert.deepEqual(invocation.args, ["resume", id, "--no-daemon", "--profile", "work", "--model", "sample-model", "--sandbox", "workspace-write", "--ask-for-approval", "on-request", "--add-dir", "../shared"]);
+  assert.equal(hasShellSafeArguments(invocation), true);
+});
+
+test("quoted configuration is preserved as one argument and never sent as raw shell text", () => {
+  const launch = launchFromCommand(`codex -c 'model_reasoning_effort="high"' -p 'Work Profile' "please explain --yolo"`);
+  assert.deepEqual(launch?.args, ["-c", 'model_reasoning_effort="high"', "-p", "Work Profile"]);
+  assert.equal(hasShellSafeArguments(resumeInvocation("codex", undefined, undefined, launch)), false);
+  assert.throws(() => launchFromCommand("codex --remote ws://host:1234"), /Remote/);
+  assert.throws(() => resumeInvocation("codex", undefined, undefined, {args:["--remote", "ws://host"]}), /Invalid/);
+});
+
+test("custom Codex executable and flags after the initial prompt survive resume", () => {
+  const launch = launchFromCommand(`'/Users/Test User/bin/codex' 'original task' --profile work --no-daemon`);
+  const invocation = resumeInvocation("codex", undefined, undefined, launch);
+  assert.equal(invocation.executable, "/Users/Test User/bin/codex");
+  assert.deepEqual(invocation.args, ["resume", "--last", "--profile", "work", "--no-daemon"]);
+  assert.equal(hasShellSafeArguments(invocation), false);
 });
 
 test("recognizes macOS and Linux installation paths including quoted spaces", () => {

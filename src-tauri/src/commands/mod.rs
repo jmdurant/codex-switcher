@@ -1,6 +1,7 @@
 //! Tauri commands module
 
 pub mod account;
+pub(crate) mod activation;
 pub mod auto_quota_log;
 pub(crate) mod daemon_auth;
 pub mod current_login;

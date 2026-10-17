@@ -40,7 +40,7 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     let content =
         serde_json::to_string_pretty(&auth_json).context("Failed to serialize auth.json")?;
 
-    fs::write(&auth_path, content)
+    super::atomic::write_private(&auth_path, content.as_bytes())
         .with_context(|| format!("Failed to write auth.json: {}", auth_path.display()))?;
 
     // Set restrictive permissions on Unix
@@ -65,7 +65,7 @@ pub fn clear_current_auth() -> Result<()> {
 }
 
 /// Create an AuthDotJson structure from a StoredAccount
-fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
+pub(crate) fn create_auth_json(account: &StoredAccount) -> Result<AuthDotJson> {
     match &account.auth_data {
         AuthData::ApiKey { key } => Ok(AuthDotJson {
             openai_api_key: Some(key.clone()),

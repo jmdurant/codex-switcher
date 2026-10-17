@@ -43,7 +43,8 @@ test("rotation uses weekly reserve between due five-hour windows",()=>{
   const active={...account("active",100),is_active:true};
   const reserve=account("pro");reserve.usage!.primary_used_percent=null;reserve.usage!.primary_window_minutes=null;reserve.usage!.primary_resets_at=null;
   const next=account("next");
-  assert.equal(selectAutoQuotaOption([active,next,reserve],now)?.account.id,"pro");
+  const policy = {useExpiringFiveHourQuota:true,leadMinutes:60};
+  assert.equal(selectAutoQuotaOption([active,next,reserve],now,new Set(),policy)?.account.id,"pro");
   next.usage!.primary_resets_at=now/1000+1800;
-  assert.equal(selectAutoQuotaOption([active,next,reserve],now)?.account.id,"next");
+  assert.equal(selectAutoQuotaOption([active,next,reserve],now,new Set(),policy)?.account.id,"next");
 });

@@ -212,6 +212,7 @@ function App() {
     warmupAccount,
     warmupAllAccounts,
     switchAccount,
+    switchStatus,
     deleteAccount,
     renameAccount,
     importFromFile,
@@ -617,7 +618,7 @@ function App() {
     };
   }, []);
 
-  const handleSwitch = async (accountId: string, force = false, reopenIde = true, trace?: (event: string, detail?: Record<string, unknown>) => void) => {
+  const handleSwitch = async (accountId: string, force = false, reopenIde = true, trace?: (event: string, detail?: Record<string, unknown>) => void, expectedActive?: string) => {
     if (switchInFlightRef.current) { trace?.("switch_aborted", { reason: "switch_already_in_flight" }); return false; }
     switchInFlightRef.current = true;
     setSwitchingId(accountId);
@@ -638,8 +639,10 @@ function App() {
         }
       }
       trace?.("switch_backend_started", { force, reopenIde });
-      await switchAccount(accountId, force, reopenIde);
-      switched = true;
+      const outcome = await switchAccount(accountId, force, reopenIde, expectedActive);
+      switched = outcome.switched;
+      if (outcome.warning) showWarmupToast(outcome.warning, !outcome.activation_verified);
+      else if (outcome.switched) showWarmupToast("Account activated and verified in the running Codex daemon.");
     } catch (err) {
       trace?.("switch_backend_failed", { error: formatWarmupError(err) });
       console.error("Failed to switch account:", err);
@@ -797,13 +800,12 @@ function App() {
       forceCloseConfirmOpen ? "close_confirmation_open" : loading ? "loading_accounts" :
       staggerRunning ? "staggered_warmup" : undefined,
     accounts,
-    onSwitch: async (accountId, cancelled, trace) => {
+    onSwitch: async (accountId, cancelled, trace, expectedActive) => {
       const processes = await checkProcesses();
       if (!processes) { trace("switch_aborted", { reason: "process_check_failed" }); return false; }
       if (cancelled()) { trace("switch_aborted", { reason: "cancelled_after_process_check" }); return false; }
       trace("switch_process_check", { canSwitch: processes.can_switch, processCount: processes.count });
-      const switched = await handleSwitch(accountId, !processes.can_switch, false, trace);
-      if (switched) showWarmupToast("Auto-selected the best available account based on fresh quota.");
+      const switched = await handleSwitch(accountId, !processes.can_switch, false, trace, expectedActive);
       return switched;
     },
     onError: (message) => showWarmupToast(`Auto-selection failed: ${message}`, true),
@@ -832,9 +834,9 @@ function App() {
           if (accountId && latestProcessInfo?.can_switch) {
             try {
               setSwitchingId(accountId);
-              await switchAccount(accountId, false);
+              const outcome = await switchAccount(accountId, false);
               setPendingTraySwitchAccountId(null);
-              showWarmupToast("Switched account from tray.");
+              showWarmupToast(outcome.warning ?? "Account activated and verified from tray.");
             } catch (err) {
               console.error("Failed to retry tray account switch:", err);
               showWarmupToast(`Switch failed: ${formatWarmupError(err)}`, true);
@@ -2097,6 +2099,7 @@ function App() {
 
       {/* Main Content */}
       <main className="max-w-5xl mx-auto px-6 pt-4 pb-8">
+        {switchStatus && <p role="status" className="mb-4 rounded-lg border border-gray-300 px-4 py-3 text-sm dark:border-gray-700">{switchStatus}</p>}
         <CurrentCodexLogin
           accountsRevision={accounts.map((account) => `${account.id}:${account.is_active}`).join(",")}
           maskedAccountIds={maskedAccounts}

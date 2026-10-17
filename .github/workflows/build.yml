@@ -47,7 +47,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -66,7 +66,13 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --frozen-lockfile
+      - name: Test switching contracts
+        run: node --experimental-strip-types --test tests/*.test.ts
+      - name: Test backend
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib
+      - name: Check companion
+        run: pnpm --dir ide-extension run package
 
       - name: Determine tag
         id: tag

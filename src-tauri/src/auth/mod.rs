@@ -1,6 +1,8 @@
 //! Authentication module
 
 pub mod antigravity;
+pub(crate) mod atomic;
+pub(crate) mod operation;
 #[cfg(target_os = "macos")]
 pub(crate) mod antigravity_macos;
 pub mod oauth_server;

@@ -2,6 +2,15 @@ import type { ImportAccountsSummary } from "../types";
 
 export type FileSource = string | File;
 
+export interface SwitchResumeResult {
+  switched: boolean;
+  activation_verified: boolean;
+  resume_requested_sessions: number;
+  resume_verified: boolean;
+  resume_request_id: string | null;
+  warning: string | null;
+}
+
 export interface IdeResumePreparation {
   requestId: string | null;
   capturedSessions: number;

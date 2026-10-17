@@ -10,6 +10,40 @@ import { invokeBackend, isTauriRuntime, type FileSource } from "../lib/platform"
 import { readUsageRefreshIntervalMs } from "../lib/autoWarmup";
 
 export function useAccounts(usageRefreshIntervalMs?: number) {
+  const [lastSwitch, setLastSwitch] = useState<import("../lib/platform").SwitchResumeResult | null>(null);
+  const [switchStatus, setSwitchStatus] = useState<string | null>(null);
+  useEffect(() => {
+    if (!lastSwitch) return;
+    const activated = lastSwitch.activation_verified ? "Account verified in the Codex daemon." : "Credentials saved for the next Codex launch.";
+    setSwitchStatus(lastSwitch.warning ?? activated);
+    if (!lastSwitch.resume_request_id || lastSwitch.resume_requested_sessions === 0) return;
+    let cancelled = false, polls = 0, pending = false;
+    const timer = window.setInterval(async () => {
+      if (pending) return;
+      pending = true;
+      try {
+        const status = await invokeBackend<{resume_verified: boolean; resume_failed_sessions: number}>("get_switch_resume_status", {
+          requestId: lastSwitch.resume_request_id, expected: lastSwitch.resume_requested_sessions,
+        });
+        if (cancelled) return;
+        if (status.resume_failed_sessions > 0) {
+          setSwitchStatus(`${activated} ${status.resume_failed_sessions} session(s) failed to resume. Open the companion extension output for details.`);
+          window.clearInterval(timer);
+        } else if (status.resume_verified) {
+          setSwitchStatus(`${activated} All captured sessions have verified startup.`);
+          window.clearInterval(timer);
+        }
+      } catch { /* Keep the unverified state; a failed read is never success. */ }
+      finally {
+        pending = false;
+        if (++polls >= 30) {
+          window.clearInterval(timer);
+          if (!cancelled) setSwitchStatus(previous => previous?.includes("verified startup") || previous?.includes("failed to resume") ? previous : `${activated} Session startup is still unverified. Check the Codex terminals before continuing.`);
+        }
+      }
+    }, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [lastSwitch]);
   const [accounts, setAccounts] = useState<AccountWithUsage[]>([]);
   const [statsRefreshVersions, setStatsRefreshVersions] = useState<Record<string, number>>({});
   const refreshStats = useCallback((accountIds: string[]) => {
@@ -256,15 +290,18 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
   }, []);
 
   const switchAccount = useCallback(
-    async (accountId: string, force = false, reopenIde = true) => {
+    async (accountId: string, force = false, reopenIde = true, expectedActive?: string) => {
+      setLastSwitch(null);
+      setSwitchStatus("Activating account…");
       try {
-        if (force) {
-          await invokeBackend("switch_account_with_resume", { accountId, reopenIde });
-        } else {
-          await invokeBackend("switch_account", { accountId, force: false });
-        }
+        const outcome = force || expectedActive
+          ? await invokeBackend<import("../lib/platform").SwitchResumeResult>("switch_account_with_resume", { accountId, reopenIde, expectedActive })
+          : await invokeBackend<import("../lib/platform").SwitchResumeResult>("switch_account", { accountId, force: false });
         await loadAccounts(true); // Preserve usage data
+        setLastSwitch(outcome);
+        return outcome;
       } catch (err) {
+        setSwitchStatus(`Switch failed: ${err instanceof Error ? err.message : String(err)}`);
         throw err;
       }
     },
@@ -455,6 +492,7 @@ export function useAccounts(usageRefreshIntervalMs?: number) {
 
   return {
     accounts,
+    switchStatus,
     statsRefreshVersions,
     loading,
     error,

@@ -3,7 +3,6 @@
 use crate::{
     auth::{
         import_from_auth_json_contents, load_accounts, read_current_auth, with_accounts_store,
-        AUTH_OPERATION_LOCK,
     },
     types::{AccountInfo, AccountsStore, AuthData, AuthDotJson, StoredAccount},
 };
@@ -12,9 +11,11 @@ use crate::{
 pub struct CurrentCodexLogin {
     pub account: AccountInfo,
     pub is_managed: bool,
+    pub runtime_verified: bool,
+    pub runtime_error: Option<String>,
 }
 
-fn read_live_account() -> anyhow::Result<Option<StoredAccount>> {
+pub(crate) fn read_live_account() -> anyhow::Result<Option<StoredAccount>> {
     account_from_live_auth(read_current_auth()?)
 }
 
@@ -48,7 +49,7 @@ fn account_from_live_auth(auth: Option<AuthDotJson>) -> anyhow::Result<Option<St
     Ok(Some(account))
 }
 
-fn same_login(stored: &StoredAccount, live: &StoredAccount) -> bool {
+pub(crate) fn same_login(stored: &StoredAccount, live: &StoredAccount) -> bool {
     match (&stored.auth_data, &live.auth_data) {
         (AuthData::ApiKey { key: a }, AuthData::ApiKey { key: b }) => a == b,
         (
@@ -94,7 +95,7 @@ fn same_login(stored: &StoredAccount, live: &StoredAccount) -> bool {
 /// Metadata only; tokens never cross the frontend IPC boundary.
 #[tauri::command]
 pub async fn get_current_codex_login() -> Result<Option<CurrentCodexLogin>, String> {
-    let _guard = AUTH_OPERATION_LOCK.lock().await;
+    let _guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
     let Some(live) = read_live_account().map_err(|e| e.to_string())? else {
         return Ok(None);
     };
@@ -103,12 +104,19 @@ pub async fn get_current_codex_login() -> Result<Option<CurrentCodexLogin>, Stri
         .accounts
         .iter()
         .find(|account| same_login(account, &live));
+    let verification = super::daemon_auth::verify_active(&live).await;
+    let (runtime_verified, runtime_error) = match verification {
+        Ok(verified) => (verified, None),
+        Err(error) => (false, Some(format!("The Codex daemon login could not be verified: {error}. Activate the intended account again."))),
+    };
     Ok(Some(CurrentCodexLogin {
         account: AccountInfo::from_stored(
             existing.unwrap_or(&live),
             store.active_account_id.as_deref(),
         ),
         is_managed: existing.is_some(),
+        runtime_verified,
+        runtime_error,
     }))
 }
 
@@ -160,11 +168,14 @@ fn capture_into_store(store: &mut AccountsStore, mut live: StoredAccount) -> Acc
 /// refreshes a token, launches a login flow, or terminates running sessions.
 #[tauri::command]
 pub async fn capture_current_codex_login() -> Result<AccountInfo, String> {
-    let _guard = AUTH_OPERATION_LOCK.lock().await;
+    let _guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
     let live = read_live_account()
         .map_err(|e| e.to_string())?
         .ok_or("No local Codex login was found")?;
-    with_accounts_store(|store| Ok(capture_into_store(store, live))).map_err(|e| e.to_string())
+    let account = with_accounts_store(|store| Ok(capture_into_store(store, live))).map_err(|e| e.to_string())?;
+    super::activation::accept_captured_login(&super::activation::ActivationFiles::local().map_err(|e|e.to_string())?)
+        .map_err(|e| format!("Login captured, but pending recovery needs attention: {e:#}"))?;
+    Ok(account)
 }
 
 #[cfg(test)]

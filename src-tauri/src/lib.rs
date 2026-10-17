@@ -85,6 +85,7 @@ pub fn run() {
             mcp::set_agent_access,
             mcp::get_agent_operations,
             commands::switch_account_with_resume,
+            commands::get_switch_resume_status,
             commands::open_codex_app,
             // Account management
             list_accounts,

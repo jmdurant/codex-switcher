@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, type ResumeTool } from "./session";
+import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, launchFromCommand, launchFromArgs, hasShellSafeArguments, type ResumeLaunch, type ResumeTool } from "./session";
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
@@ -12,7 +12,7 @@ import { GoalContinuationPreference } from "./goalPreference";
 import { RetryLedger, RetryPrompt, NetworkResumePrompt, CodexUpdatePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
 import { SESSION_ID, canContinueGoal, captureGoal, fingerprint, goalReadyAction, sessionIdFromStatus, type GoalCapture } from "./goal";
 
-const PROTOCOL_VERSION = 1;
+const PROTOCOL_VERSION = 2;
 const POLL_INTERVAL_MS = 250;
 const HEARTBEAT_INTERVAL_MS = 2_000;
 const CLIENT_MAX_AGE_MS = 6_000;
@@ -29,6 +29,7 @@ interface BridgeRequest {
 }
 
 interface CapturedSession {
+  launch?: ResumeLaunch;
   yolo?: boolean;
   tool: ResumeTool;
   cwd: string;
@@ -62,6 +63,8 @@ interface ClientHeartbeat {
 }
 
 interface ActiveExecution {
+  launch?: ResumeLaunch;
+  launchError?: string;
   yolo?: boolean;
   resumeLast?: boolean;
   execution?: vscode.TerminalShellExecution;
@@ -323,6 +326,18 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
         clearPendingGoal(terminal);
         output.appendLine("Codex session changed; link the current session again before goal continuation.");
       }
+      if (observedId && !active.sessionId && await within(codexReader.isInteractiveSession(observedId, active.cwd), 700)) {
+        if (activeExecutions.get(terminal) !== active) return;
+        active.sessionId = observedId;
+        active.discovered = false;
+        output.appendLine("Linked the exact session ID shown by Codex /status.");
+        queueHeartbeat();
+      }
+      const attempt = resumeAttempts.get(terminal);
+      if (observedId && attempt && !attempt.verified && attempt.sessionId === observedId && active.sessionId === observedId) {
+        attempt.verified = true;
+        await recordResumeOutcome(attempt.outcomeBase, "startup_verified");
+      }
       const pending = pendingGoals.get(terminal);
       if (!pending || pending.checking || active.sessionId !== pending.sessionId || !continueGoals()) continue;
       const action = goalReadyAction(tail);
@@ -376,7 +391,7 @@ async function acceptVerifiedCodexUpdate(terminal: vscode.Terminal, active: Acti
         active.sessionId !== sessionId || prompt.revision !== revision || !prompt.observedAt) return;
     updatingSessions.add(sessionId);
     updateResumes.set(terminal, { execution: active.execution, session: {
-      tool: "codex", cwd: active.cwd, sessionId, yolo: active.yolo,
+      tool: "codex", cwd: active.cwd, sessionId, yolo: active.yolo, launch: active.launch,
       terminalName: terminal.name, terminalProcessId: active.terminalProcessId,
       goal: captureGoal(goal),
     } });
@@ -408,9 +423,10 @@ function refreshDiscovery(): Promise<void> {
           usedSessions.add(active.sessionId);
           continue;
         }
-        const sessionId = await codexReader.recentInteractiveSession(entry.cwd, (reason, detail) => {
-          if (reason !== "candidate_found") output.appendLine(`Linux Codex session lookup for PID ${entry.processId}: ${reason} ${JSON.stringify(detail)}.`);
-        });
+        const sessionId = entry.sessionId;
+        // Preserve observed or explicitly linked daemon sessions; native daemon
+        // ownership cannot identify a terminal attachment.
+        if (!sessionId) continue;
         if (!sessionId || usedSessions.has(sessionId)) continue;
         const session = await codexReader.interactiveSession(sessionId);
         if (!session || path.normalize(session.cwd) !== path.normalize(entry.cwd)) continue;
@@ -419,12 +435,20 @@ function refreshDiscovery(): Promise<void> {
           active = { tool: "codex", cwd: entry.cwd, terminalProcessId: terminalPid, discovered: true };
           activeExecutions.set(terminal, active);
         }
+        if (!active.launch && !active.launchError) {
+          try {
+            if (!entry.argv && /(?:^|\\s)(?:-c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--enable|--disable)(?:\\s|=)/.test(entry.commandLine)) {
+              throw new Error("Launch options cannot be recovered exactly from this Unix process. Relaunch with shell integration before switching.");
+            }
+            active.launch = entry.argv ? launchFromArgs(entry.argv) : launchFromCommand(entry.commandLine);
+          } catch (error) { active.launchError = String(error); }
+        }
         active.cwd = entry.cwd;
         active.terminalProcessId = terminalPid;
         active.sessionId = sessionId;
         active.codexProcessId = entry.processId;
         active.discovered = true;
-        output.appendLine(`Identified Linux Codex PID ${entry.processId} as session ${sessionId} in ${entry.cwd}.`);
+        output.appendLine(`Identified Unix Codex PID ${entry.processId} as session ${sessionId} in ${entry.cwd}.`);
       }
       queueHeartbeat();
       return;
@@ -463,6 +487,12 @@ function refreshDiscovery(): Promise<void> {
         if (!active) {
           active = { tool: "codex", cwd, terminalProcessId: pid, discovered: true };
           activeExecutions.set(terminal, active);
+        }
+        if (!active.launch && !active.launchError) {
+          try {
+            if (!owner.commandLine) throw new Error("Launch settings were not observed. Relaunch with shell integration before switching.");
+            active.launch = launchFromCommand(owner.commandLine);
+          } catch (error) { active.launchError = String(error); }
         }
         active.cwd = cwd;
         active.terminalProcessId = pid;
@@ -512,7 +542,6 @@ async function writeJson(filePath: string, value: unknown): Promise<void> {
   const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(temporary, JSON.stringify(value), { encoding: "utf8", mode: 0o600 });
   try {
-    await fs.rm(filePath, { force: true });
     await fs.rename(temporary, filePath);
   } finally {
     await fs.rm(temporary, { force: true });
@@ -568,6 +597,7 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
   const seen = new Set<string>();
   for (const [terminal, active] of activeExecutions) {
     if (active.tool !== request.tool) continue;
+    if (active.launchError) { output.appendLine(`Cannot capture ${terminal.name}: ${active.launchError}`); continue; }
     const identity = active.sessionId ?? `terminal:${active.terminalProcessId ?? vscode.window.terminals.indexOf(terminal)}`;
     const key = `${active.tool}:${identity}`;
     if (seen.has(key)) continue;
@@ -579,30 +609,11 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
       terminalProcessId: active.terminalProcessId,
       sessionId: active.sessionId,
       yolo: active.yolo,
+      launch: active.launch,
     };
     if (active.tool === "codex" && !session.sessionId) {
-      const label = `Session lookup for request ${request.requestId}, terminal ${active.terminalProcessId ?? "unknown"}`;
-      if (!active.resumeLast) {
-        output.appendLine(`${label}: not attempted; command was not recognized as codex resume --last.`);
-      } else {
-        const started = Date.now();
-        let timer: NodeJS.Timeout | undefined;
-        const lookup = codexReader.recentInteractiveSession(active.cwd, (reason, detail) =>
-          output.appendLine(`${label}: ${reason} ${JSON.stringify(detail)}.`))
-          .then(id => ({ kind: "finished" as const, id }), error => ({ kind: "error" as const, error: String(error) }));
-        const outcome = await Promise.race([
-          lookup,
-          new Promise<{ kind: "timeout" }>(resolve => { timer = setTimeout(() => resolve({ kind: "timeout" }), 700); }),
-        ]);
-        if (timer) clearTimeout(timer);
-        output.appendLine(`${label}: ${outcome.kind}${outcome.kind === "error" ? ` ${outcome.error}` : ""} after ${Date.now() - started} ms.`);
-        const resolved = outcome.kind === "finished" ? outcome.id : undefined;
-        if (resolved && activeExecutions.get(terminal) === active) {
-          active.sessionId = resolved;
-          session.sessionId = resolved;
-          output.appendLine(`Resolved codex resume --last to recent session ${resolved}.`);
-        }
-      }
+      output.appendLine(`Cannot capture ${terminal.name}: run /status in this Codex terminal or use AI Account Switcher: Link Codex Session, then retry.`);
+      continue;
     }
     sessions.push(session);
     if (active.tool === "codex" && active.sessionId && continueGoals()) {
@@ -703,7 +714,20 @@ async function executeResume(terminal: vscode.Terminal, session: CapturedSession
   terminal.show(false);
   // Reconnect through Codex's normal runtime: its daemon may still own the
   // conversation after the terminal exits. An independent writer conflicts.
-  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo);
+  // The terminal opens at the captured absolute cwd. Rebase --cd to that cwd
+  // so a relative launch directory is not applied twice after resume.
+  const launch = session.launch ? { ...session.launch, args: [...session.launch.args] } : undefined;
+  if (launch) for (let i = 0; i < launch.args.length; i++) {
+    if (launch.args[i] === "--cd" || launch.args[i] === "-C") launch.args[++i] = session.cwd;
+  }
+  const invocation = resumeInvocation(session.tool, session.sessionId, session.yolo, launch);
+  const integrationDeadline = Date.now() + 5000;
+  while (!terminal.shellIntegration && !hasShellSafeArguments(invocation) && Date.now() < integrationDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  if (!terminal.shellIntegration && !hasShellSafeArguments(invocation)) {
+    throw new Error("Enable terminal shell integration to restore the captured launch options safely.");
+  }
   resumeAttempts.set(terminal, { sessionId: session.sessionId, startedAt: Date.now(), outcomeBase });
   await recordResumeOutcome(outcomeBase, "dispatched");
   if (terminal.shellIntegration) {
@@ -850,9 +874,9 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand("aiAccountSwitcherResume.linkCodexSession", async () => {
       const terminal = vscode.window.activeTerminal;
-      const active = terminal && activeExecutions.get(terminal);
-      if (!terminal || !active || active.tool !== "codex") {
-        void vscode.window.showWarningMessage("Select a running Codex integrated terminal with shell integration enabled first.");
+      let active = terminal && activeExecutions.get(terminal);
+      if (!terminal || (active && active.tool !== "codex")) {
+        void vscode.window.showWarningMessage("Select the integrated terminal running your Codex conversation first.");
         return;
       }
       const id = await vscode.window.showInputBox({
@@ -861,10 +885,30 @@ export function activate(context: vscode.ExtensionContext): void {
       });
       if (!id || activeExecutions.get(terminal) !== active) return;
       try {
-        await codexReader.readGoal(id.trim().toLowerCase(), active.cwd);
-        if (activeExecutions.get(terminal) !== active) return;
+        const session = await codexReader.interactiveSession(id.trim().toLowerCase());
+        if (!session || activeExecutions.get(terminal) !== active) return;
+        if (!active || active.launchError || !active.launch) {
+          const command = await vscode.window.showInputBox({
+            title: "Preserve Codex launch settings",
+            prompt: "Enter the original Codex launch command, including profile, model, approval, sandbox, and --no-daemon options. Enter codex if you used defaults.",
+            validateInput: value => {
+              try { return launchFromCommand(value) ? undefined : "Enter a Codex launch command."; }
+              catch (error) { return String(error); }
+            },
+          });
+          if (!command || activeExecutions.get(terminal) !== active) return;
+          const launch = launchFromCommand(command);
+          if (!launch) return;
+          if (!active) {
+            active = { tool: "codex", cwd: session.cwd, terminalProcessId: await terminal.processId, launch };
+            activeExecutions.set(terminal, active);
+          } else { active.launch = launch; active.launchError = undefined; }
+        }
+        active.cwd = session.cwd;
         active.sessionId = id.trim().toLowerCase();
-        void vscode.window.showInformationMessage("Codex session linked for exact resume. Enable Continue Interrupted Goals in extension settings to continue its goal after switches.");
+        active.discovered = false;
+        queueHeartbeat();
+        void vscode.window.showInformationMessage("Codex session linked for exact resume. Continue Interrupted Goals is controlled in AI Account Switcher settings.");
       } catch { void vscode.window.showWarningMessage("Could not verify this Codex session and workspace. Check the ID and installed CLI."); }
     }),
     vscode.window.onDidStartTerminalShellExecution((event) => {
@@ -889,6 +933,17 @@ export function activate(context: vscode.ExtensionContext): void {
         resumeLast: isLastResumeCommand(event.execution.commandLine.value),
         sessionId: tool === "codex" ? sessionIdFromCommand(event.execution.commandLine.value) : undefined,
       };
+      try {
+        active.launch = launchFromCommand(event.execution.commandLine.value);
+        if (active.launch?.executable && /[\\/]/.test(active.launch.executable) && !path.isAbsolute(active.launch.executable)) {
+          active.launch.executable = path.resolve(cwd, active.launch.executable);
+        }
+        const args = active.launch?.args ?? [];
+        for (let i = 0; i < args.length; i++) {
+          if (args[i] === "--cd" || args[i] === "-C") active.cwd = path.resolve(cwd, args[++i]);
+        }
+      }
+      catch (error) { active.launchError = String(error); }
       activeExecutions.set(event.terminal, active);
       clearDialogCleaner(event.terminal);
       const cleanupLaunch = cleanupLaunches.get(event.terminal);

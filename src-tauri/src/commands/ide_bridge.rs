@@ -11,7 +11,9 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const PROTOCOL_VERSION: u8 = 1;
+// v2 requires exact session binding and preserved launch options. Older hosts
+// must reload the updated companion before they can authorize interruption.
+const PROTOCOL_VERSION: u8 = 2;
 const CLIENT_MAX_AGE_MS: u64 = 6_000;
 // The extension may need to enumerate Codex threads to bind a running Linux
 // terminal to its exact session before it can safely capture that terminal.
@@ -110,6 +112,12 @@ pub(crate) fn resume_outcome(request_id: &str, expected: usize) -> Result<serde_
     let count = verified.difference(&failed).count();
     Ok(serde_json::json!({"resume_verified": expected > 0 && count >= expected && failed.is_empty(),
         "resume_verified_sessions":count,"resume_failed_sessions":failed.len()}))
+}
+
+#[tauri::command]
+pub async fn get_switch_resume_status(request_id: String, expected: usize) -> Result<serde_json::Value, String> {
+    if expected == 0 || expected > 1000 { return Err("Invalid session count".into()); }
+    resume_outcome(&request_id, expected).map_err(|error| error.to_string())
 }
 
 fn now_ms() -> u64 {

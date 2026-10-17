@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use super::{
     load_accounts, read_current_auth, save_accounts, switch_to_account, sync_active_account_tokens,
-    update_account_chatgpt_tokens, AUTH_OPERATION_LOCK,
+    update_account_chatgpt_tokens,
 };
 use crate::types::{
     parse_chatgpt_id_token_claims, AccountsStore, AuthData, AuthDotJson, StoredAccount,
@@ -83,7 +83,7 @@ struct TokenRefreshUpdate {
 /// Ensure the account has non-expired ChatGPT OAuth tokens.
 /// Returns an updated account when a refresh was performed.
 pub async fn ensure_chatgpt_tokens_fresh(account: &StoredAccount) -> Result<StoredAccount> {
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = crate::auth::operation::lock_auth().await?;
     ensure_chatgpt_tokens_fresh_locked(account).await
 }
 
@@ -125,7 +125,7 @@ pub async fn refresh_chatgpt_tokens(account: &StoredAccount) -> Result<StoredAcc
         return Ok(account.clone());
     }
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = crate::auth::operation::lock_auth().await?;
     refresh_chatgpt_tokens_locked(account).await
 }
 
@@ -136,8 +136,7 @@ async fn refresh_chatgpt_tokens_locked(account: &StoredAccount) -> Result<Stored
 pub(crate) async fn refresh_host_managed_tokens(account: &StoredAccount) -> Result<StoredAccount> {
     // An activation holds this lock while awaiting the daemon actor. Do not
     // deadlock that activation if a refresh arrived just before its request.
-    let _auth_guard = AUTH_OPERATION_LOCK.try_lock()
-        .map_err(|_| anyhow::anyhow!("Account operation in progress; retry refresh"))?;
+    let _auth_guard = crate::auth::operation::try_lock_auth()?;
     if load_accounts()?.active_account_id.as_deref() != Some(account.id.as_str()) {
         anyhow::bail!("Host-managed account is no longer selected");
     }
@@ -146,6 +145,13 @@ pub(crate) async fn refresh_host_managed_tokens(account: &StoredAccount) -> Resu
 
 async fn refresh_chatgpt_tokens_inner(account: &StoredAccount, host_managed: bool) -> Result<StoredAccount> {
     let (current, is_active) = load_account_reconciling_live_auth(&account.id)?;
+    let auth_before_refresh = read_current_auth()?;
+    let owns_live_auth = auth_before_refresh.as_ref().and_then(|auth| {
+        serde_json::to_string(auth).ok().and_then(|text| super::import_from_auth_json_contents(&text, String::new()).ok())
+    }).is_some_and(|live| crate::commands::current_login::same_login(&current, &live));
+    if host_managed && !owns_live_auth {
+        anyhow::bail!("The local Codex login changed; refusing to refresh the previous account");
+    }
 
     // Multiple API calls can fail with the same snapshot. Once another caller
     // (or Codex) replaces it, retry that replacement rather than rotating again.
@@ -221,7 +227,7 @@ async fn refresh_chatgpt_tokens_inner(account: &StoredAccount, host_managed: boo
 
     // Re-read active state after the network request before touching auth.json.
     let is_active = load_accounts()?.active_account_id.as_deref() == Some(account.id.as_str());
-    if is_active {
+    if is_active && owns_live_auth && serde_json::to_value(read_current_auth()?)? == serde_json::to_value(auth_before_refresh)? {
         if let Err(err) = switch_to_account(&updated) {
             println!("[Auth] Failed to sync active auth.json after token refresh: {err}");
         }

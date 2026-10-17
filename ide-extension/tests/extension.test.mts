@@ -152,7 +152,7 @@ async function scenario(options: {
   let status = options.capturedStatus ?? "active";
   let goalChanges: Record<string, unknown> = {};
   let goalCleared = false;
-  let owners: any[] = options.autoDiscover ? [{sessionId:id,processId:22,ancestors:[11]}] : [];
+  let owners: any[] = options.autoDiscover ? [{sessionId:id,processId:22,ancestors:[11],commandLine:"codex" + (options.launchMode ? ` ${options.launchMode}` : "")}] : [];
   if (options.ambiguous) owners.push({sessionId:requestId,processId:23,ancestors:[11]});
   let resumed: ReturnType<typeof execution> | undefined;
   const disposable = { dispose() {} };
@@ -208,17 +208,16 @@ async function scenario(options: {
     const bridge = path.join(root, ".codex-switcher", "ide-bridge");
     const requestPath = path.join(bridge, "requests", `${requestId}.json`);
     await fs.mkdir(path.dirname(requestPath), { recursive: true });
-    const request = { version: 1, requestId, tool: "codex", phase: "prepare", createdAtMs: Date.now() };
+    const request = { version: 2, requestId, tool: "codex", phase: "prepare", createdAtMs: Date.now() };
     await fs.writeFile(requestPath, JSON.stringify(request));
     intervals.get(250)!();
     const responsesDir = path.join(bridge, "responses");
     await until(async () => (await fs.readdir(responsesDir).catch(() => [])).some(name => name.endsWith(".json")));
     const responseFile = (await fs.readdir(responsesDir)).find(name => name.endsWith(".json"))!;
     const response = JSON.parse(await fs.readFile(path.join(responsesDir, responseFile), "utf8"));
-    if (options.twoUnknown) { assert.equal(response.sessions.length, 2); return; }
+    if (options.twoUnknown) { assert.equal(response.sessions.length, 0); assert.equal(response.capturedSessions, 0); return; }
     if (options.ambiguous) {
-      assert.equal(response.sessions[0].sessionId, undefined);
-      assert.equal(response.sessions[0].goal, undefined);
+      assert.equal(response.sessions.length, 0);
       assert.equal(messages.some(s => s.includes("Automatically identified")), false);
       return;
     }
@@ -239,7 +238,7 @@ async function scenario(options: {
       await until(() => launches.length === 1);
       const outcomeFiles = () => fs.readdir(path.join(bridge, "outcomes")).catch(() => [] as string[]);
       await until(async () => (await outcomeFiles()).some(name => name.startsWith(requestId) && name.endsWith("-dispatched.json")));
-      assert.deepEqual(launches[0], ["codex", "resume", id, ...(options.expectedYolo === false ? [] : ["--yolo"])]);
+      assert.deepEqual(launches[0], ["codex", "resume", id, ...(options.launchMode?.split(" ") ?? [])]);
       if (options.exitStartup) {
         events.end({terminal,execution:resumed,exitCode:1});
         assert.ok(messages.some(s => s.includes("exited with code 1")));
@@ -255,7 +254,7 @@ async function scenario(options: {
         assert.deepEqual(newlines, [false]);
         events.end({terminal,execution:resumed,exitCode:0});
         await until(() => launches.length === 2);
-        assert.deepEqual(launches[1], ["codex", "resume", id, "--yolo"]);
+        assert.deepEqual(launches[1], ["codex", "resume", id, ...(options.launchMode?.split(" ") ?? [])]);
         return;
       }
       status = "paused";
@@ -288,7 +287,7 @@ async function scenario(options: {
       assert.equal(launches.length, 1);
       if (options.autoDiscover && !options.ambiguous) {
         assert.ok(!(await outcomeFiles()).some(name => name.endsWith("-startup_verified.json")), "Sending a command is not startup verification");
-        owners = [{ sessionId: id, processId: 33, ancestors: [11] }];
+        owners = [{ sessionId: id, processId: 33, commandLine: "codex", ancestors: [11] }];
         intervals.get(5000)!();
         await until(async () => (await outcomeFiles()).some(name => name.endsWith("-startup_verified.json")));
       }
@@ -332,7 +331,7 @@ test("a still-valid paused goal keeps its startup dialog", () => scenario({captu
 
 test("recovered terminals without shell cwd use their process-owned session directory", () => scenario({autoDiscover:true,recovered:true,missingShellCwd:true}));
 test("goal API failure does not prevent capturing and reopening a recovered conversation", () => scenario({autoDiscover:true,recovered:true,goalUnavailable:true,expectContinuation:false}));
-test("two unlinked terminals sharing a directory are captured separately", () => scenario({twoUnknown:true}));
+test("two unlinked terminals sharing a directory are excluded from interruption", () => scenario({twoUnknown:true}));
 
 test("recovered terminals use session cwd when shell cwd is stale", () => scenario({autoDiscover:true,recovered:true,staleShellCwd:true}));
 test("a resumed command exiting during startup is reported as failure", () => scenario({exitStartup:true}));

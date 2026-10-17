@@ -5,6 +5,8 @@ import type { AccountInfo } from "../types";
 interface DetectedLogin {
   account: AccountInfo;
   is_managed: boolean;
+  runtime_verified?: boolean;
+  runtime_error?: string | null;
 }
 
 export function CurrentCodexLogin({ accountsRevision, maskedAccountIds, onCaptured }: {
@@ -62,7 +64,7 @@ export function CurrentCodexLogin({ accountsRevision, maskedAccountIds, onCaptur
     <section className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-800 dark:bg-gray-900" aria-label="Current Codex login">
       <div className="min-w-0">
         <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
-          {login ? "Codex login detected" : "No local Codex login detected"}
+          {login ? login.runtime_verified ? "Codex login verified in the running daemon" : "Codex login found in saved credentials" : "No local Codex login detected"}
         </p>
         {login && (
           <p className="break-all text-sm text-gray-500 dark:text-gray-400">
@@ -71,9 +73,10 @@ export function CurrentCodexLogin({ accountsRevision, maskedAccountIds, onCaptur
           </p>
         )}
         {error && <p className="mt-1 text-sm text-red-600 dark:text-red-300" role="alert">{error}</p>}
+        {login?.runtime_error && <p className="mt-1 text-sm text-amber-700 dark:text-amber-300" role="alert">{login.runtime_error}</p>}
       </div>
       {login && (login.is_managed && login.account.is_active ? (
-        <span className="text-xs text-gray-500 dark:text-gray-400">Already added · Active</span>
+        <span className="text-xs text-gray-500 dark:text-gray-400">Already added · Selected</span>
       ) : (
         <button onClick={() => void capture()} disabled={busy}
           className="rounded-lg bg-gray-900 px-3 py-2 text-sm font-medium text-white disabled:opacity-50 dark:bg-gray-100 dark:text-gray-900">

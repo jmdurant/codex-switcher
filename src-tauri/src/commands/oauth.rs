@@ -7,8 +7,8 @@ use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
 use crate::auth::{
-    add_account, get_account, load_accounts, replace_account_after_relogin, switch_to_account,
-    touch_account, AUTH_OPERATION_LOCK,
+    add_account, get_account, load_accounts, replace_account_after_relogin,
+    touch_account,
 };
 use crate::types::{AccountInfo, AuthData, OAuthLoginInfo};
 
@@ -223,7 +223,7 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
     }
     let account = result?;
 
-    let _auth_guard = AUTH_OPERATION_LOCK.lock().await;
+    let _auth_guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
 
     let stored = match target {
         PendingOAuthTarget::Add => {
@@ -236,7 +236,8 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
                 // that empty-store case should the new credentials be written
                 // to Codex; adding another account must leave the current
                 // login and active-account selection untouched.
-                switch_to_account(&stored).map_err(|e| e.to_string())?;
+                super::activation::activate(&super::activation::ActivationFiles::local().map_err(|e|e.to_string())?, &stored, &super::activation::Daemon)
+                    .await.map_err(|e|format!("Login was saved, but activation failed: {e:#}"))?;
             }
             touch_account(&stored.id).map_err(|e| e.to_string())?;
             stored
@@ -250,7 +251,8 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
             let stored =
                 replace_account_after_relogin(&account_id, account).map_err(|e| e.to_string())?;
             if was_active {
-                switch_to_account(&stored).map_err(|e| e.to_string())?;
+                super::activation::activate(&super::activation::ActivationFiles::local().map_err(|e|e.to_string())?, &stored, &super::activation::Daemon)
+                    .await.map_err(|e|format!("Login was saved, but activation failed: {e:#}"))?;
             }
             stored
         }

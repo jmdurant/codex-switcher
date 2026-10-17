@@ -1,10 +1,11 @@
 import { execFile } from "node:child_process";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import * as fs from "node:fs/promises";
 import { SESSION_ID } from "./goal.ts";
 
-export interface SessionOwner { sessionId: string; processId: number; ancestors: number[] }
-export interface UnixCodexProcess { processId: number; ancestors: number[]; cwd: string }
+export interface SessionOwner { sessionId: string; processId: number; ancestors: number[]; commandLine?: string }
+export interface UnixCodexProcess { processId: number; ancestors: number[]; cwd: string; sessionId?: string; commandLine: string; argv?: string[] }
 export function parseOwners(value: unknown): SessionOwner[] {
   if (!Array.isArray(value)) throw new Error("Invalid session discovery response.");
   return value.filter((row): row is SessionOwner => Boolean(row && SESSION_ID.test(row.sessionId) &&
@@ -27,10 +28,23 @@ export async function discoverSessions(scriptPath: string): Promise<SessionOwner
   return parseOwners(JSON.parse(stdout.replace(/^\uFEFF/, "")));
 }
 
-/** Discover Codex processes below integrated-terminal shells on Linux. */
+/** Parse lsof's machine-readable names, shared by macOS and other Unix hosts. */
+export function lsofNames(output: string): string[] {
+  return output.split(/[\n\0]/).filter(line => line.startsWith("n")).map(line => line.slice(1));
+}
+export function sessionFromOpenFiles(files: string[]): string | undefined {
+  const ids = new Set(files.flatMap(file => {
+    const match = file.match(/(?:^|\/)thread-writer-locks\/([^/]+)\.lock$/);
+    return match && SESSION_ID.test(match[1]) ? [match[1].toLowerCase()] : [];
+  }));
+  return ids.size === 1 ? [...ids][0] : undefined;
+}
+
+/** Discover terminal descendants and their own writer locks; shared daemon
+ * locks cannot prove which conversation is attached to a terminal. */
 export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> {
   if (process.platform === "win32") return [];
-  const { stdout } = await promisify(execFile)("ps", ["-eo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
+  const { stdout } = await promisify(execFile)("ps", ["-ww", "-eo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
   const rows = new Map<number, { ppid: number; args: string }>();
   for (const line of stdout.split("\n")) {
     const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.+)$/);
@@ -48,14 +62,23 @@ export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> 
       parent = next;
     }
     try {
-      const cwd = await fsReadlink(`/proc/${pid}/cwd`);
-      if (cwd.startsWith("/")) result.push({ processId: pid, ancestors, cwd: path.normalize(cwd) });
+      let cwd: string | undefined, files: string[], argv: string[] | undefined;
+      if (process.platform === "linux") {
+        cwd = await fs.readlink(`/proc/${pid}/cwd`);
+        argv = (await fs.readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean);
+        const descriptors = await fs.readdir(`/proc/${pid}/fd`);
+        files = (await Promise.all(descriptors.map(fd => fs.readlink(`/proc/${pid}/fd/${fd}`).catch(() => ""))));
+      } else {
+        const options = { timeout: 1500, maxBuffer: 2 * 1024 * 1024 };
+        const [directory, open] = await Promise.all([
+          promisify(execFile)("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], options),
+          promisify(execFile)("lsof", ["-p", String(pid), "-Fn"], options),
+        ]);
+        cwd = lsofNames(directory.stdout)[0];
+        files = lsofNames(open.stdout);
+      }
+      if (cwd?.startsWith("/")) result.push({ processId: pid, ancestors, cwd: path.normalize(cwd), sessionId: sessionFromOpenFiles(files), commandLine: row.args, argv });
     } catch { /* process exited during the snapshot */ }
   }
   return result;
-}
-
-async function fsReadlink(file: string): Promise<string> {
-  const { stdout } = await promisify(execFile)("readlink", ["-f", file], { timeout: 1000 });
-  return stdout.trim();
 }

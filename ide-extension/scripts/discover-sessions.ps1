@@ -55,7 +55,7 @@ if (Test-Path -LiteralPath $locksDirectory) {
         $ancestors += [int]$parentId
         $cursor = $parent
       }
-      $results += @{sessionId=$file.BaseName.ToLowerInvariant();processId=[int]$owner;ancestors=$ancestors}
+      $results += @{sessionId=$file.BaseName.ToLowerInvariant();processId=[int]$owner;ancestors=$ancestors;commandLine=$proc.CommandLine}
     }
   }
 }

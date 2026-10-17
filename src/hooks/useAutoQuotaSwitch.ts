@@ -10,7 +10,7 @@ interface Options {
   busy: boolean;
   busyReason?: string;
   accounts: AccountWithUsage[];
-  onSwitch: (id: string, cancelled: () => boolean, trace: (event: string, detail?: Record<string, unknown>) => void) => Promise<boolean>;
+  onSwitch: (id: string, cancelled: () => boolean, trace: (event: string, detail?: Record<string, unknown>) => void, expectedActive: string) => Promise<boolean>;
   onError: (message: string) => void;
 }
 
@@ -43,6 +43,7 @@ export function useAutoQuotaSwitch(options: Options) {
         setStatus("Checking quota…");
         const now = Date.now();
         for (const [id, expiry] of recent.current) if (expiry <= now) recent.current.delete(id);
+        let blockedReason: string | undefined;
         const decision = await findAutoQuotaSwitch({
           listAccounts: () => invokeBackend<AccountWithUsage[]>("list_accounts"),
           getCurrentLogin: () => invokeBackend<{ account: { id: string }; is_managed: boolean } | null>("get_current_codex_login"),
@@ -50,6 +51,7 @@ export function useAutoQuotaSwitch(options: Options) {
           now: Date.now,
           cancelled,
           trace,
+          blocked: reason => { blockedReason = reason; },
         }, new Set(recent.current.keys()), options.policy);
         if (cancelled()) {
           trace("check_cancelled", { activeId, stopped, enabled: latest.current.enabled, busy: latest.current.busy,
@@ -59,7 +61,7 @@ export function useAutoQuotaSwitch(options: Options) {
         }
         if (!decision) {
           trace("check_finished_without_switch", { activeId });
-          setStatus("No switch needed or no suitable verified alternative. Checking every 30 seconds.");
+          setStatus(blockedReason ?? "No switch needed or no suitable verified alternative. Checking every 30 seconds.");
           return;
         }
         // Back off even on failure, so a failed close/switch never becomes a loop.
@@ -67,11 +69,11 @@ export function useAutoQuotaSwitch(options: Options) {
         setSwitching(true);
         trace("switch_started", { activeId: decision.from.id, targetId: decision.to.id, reason: decision.reason });
         setStatus(decision.reason === "expiring_five_hour" ? "Switching to use five-hour quota before it resets…" : "Switching to the best verified alternative…");
-        const switched = await latest.current.onSwitch(decision.to.id, cancelled, trace);
+        const switched = await latest.current.onSwitch(decision.to.id, cancelled, trace, decision.from.id);
         trace("switch_finished", { activeId: decision.from.id, targetId: decision.to.id, switched });
         if (switched) {
           recent.current.set(decision.from.id, Date.now() + 5 * 60000);
-          setStatus(decision.reason === "expiring_five_hour" ? "Using expiring five-hour quota until a limit exhausts or the window resets." : "Switched successfully. Cooling down for one minute.");
+          setStatus("Account selection updated. Check the activation notice for daemon verification and session resume status. Cooling down for one minute.");
         } else {
           retryAfter.current = Date.now() + 5 * 60000;
           setStatus("Switch could not complete. Will retry after five minutes.");

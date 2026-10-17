@@ -322,7 +322,7 @@ fn is_redeemable_reset_credit(credit: &AccountResetCredit, now: DateTime<Utc>) -
 /// Verified against the installed Codex desktop client (26.901.6511.0), which posts
 /// credit_id and redeem_request_id to this route. Never automatically retry a POST.
 pub(crate) async fn consume_reset_credit(account_id: &str, credit_id: &str, request_id: &str) -> anyhow::Result<serde_json::Value> {
-    let _guard = crate::auth::AUTH_OPERATION_LOCK.lock().await;
+    let _guard = crate::auth::operation::lock_auth().await?;
     let store = load_accounts()?;
     anyhow::ensure!(store.active_account_id.as_deref() == Some(account_id), "Active account changed before redemption");
     let account = store.accounts.iter().find(|a| a.id == account_id).ok_or_else(|| anyhow::anyhow!("Account not found"))?;

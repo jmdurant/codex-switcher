@@ -3,7 +3,8 @@ import { DEFAULT_AUTO_QUOTA_POLICY, expiringFiveHourReset, quotaOption, selectAu
 
 export interface AutoQuotaSource {
   listAccounts: () => Promise<AccountWithUsage[]>;
-  getCurrentLogin?: () => Promise<{ account: { id: string }; is_managed: boolean } | null>;
+  getCurrentLogin?: () => Promise<{ account: { id: string }; is_managed: boolean; runtime_error?: string | null } | null>;
+  blocked?: (reason: string) => void;
   getUsage: (id: string) => Promise<UsageInfo>;
   cancelled: () => boolean;
   now: () => number;
@@ -20,11 +21,14 @@ export async function findAutoQuotaSwitch(source: AutoQuotaSource, excludedIds: 
   if (source.getCurrentLogin) {
     try {
       const live = await source.getCurrentLogin();
+      if (live?.runtime_error) { source.blocked?.(live.runtime_error); trace("runtime_login_unverified"); return undefined; }
       if (!live?.is_managed || live.account.id !== active.id) {
+        source.blocked?.("Auto-switch is blocked: the selected account differs from the local Codex login. Capture the current login or activate the intended account.");
         trace("live_login_mismatch", { selectedId: active.id, liveId: live?.is_managed ? live.account.id : null });
         return undefined;
       }
     } catch (error) {
+      source.blocked?.("Auto-switch is blocked: the current Codex login could not be checked. Retry after the current account operation finishes.");
       trace("live_login_check_failed", { error: error instanceof Error ? error.message : String(error) });
       return undefined;
     }
@@ -69,9 +73,11 @@ export async function findAutoQuotaSwitch(source: AutoQuotaSource, excludedIds: 
     try {
       const live = await source.getCurrentLogin();
       if (!live?.is_managed || live.account.id !== active.id) {
+        source.blocked?.("Auto-switch is blocked: the Codex login changed during the quota check. Refresh the current login before retrying.");
         trace("live_login_changed_during_verification", { selectedId: active.id, liveId: live?.is_managed ? live.account.id : null });
         return undefined;
       }
+      if (live.runtime_error) { source.blocked?.(live.runtime_error); trace("runtime_login_unverified"); return undefined; }
     } catch (error) {
       trace("live_login_check_failed", { error: error instanceof Error ? error.message : String(error) });
       return undefined;

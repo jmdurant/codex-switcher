@@ -17,12 +17,25 @@ test("healthy active quota stays put even with a better-ranked alternative", () 
 });
 test("auto-switch stops when the selected card differs from the live Codex login", async () => {
   const events: string[] = [];
+  const reasons: string[] = [];
   const inputs = { ...source([account("active", 0), account("best", 50)]),
     getCurrentLogin: async () => ({ account: { id: "best" }, is_managed: true }),
-    trace: (event: string) => events.push(event) };
+    trace: (event: string) => events.push(event), blocked: (reason: string) => reasons.push(reason) };
   assert.equal(await findAutoQuotaSwitch(inputs, excluded), undefined);
   assert.ok(events.includes("live_login_mismatch"));
   assert.ok(!events.includes("switch_selected"));
+  assert.match(reasons[0], /selected account differs/);
+});
+
+test("matching saved credentials do not hide an unverified daemon login", async () => {
+  let reads = 0, reason = "";
+  const inputs = { ...source([account("active", 0), account("best", 50)]),
+    getCurrentLogin: async () => ({account:{id:"active"},is_managed:true,runtime_error:"Daemon login differs; activate again."}),
+    getUsage: async () => { reads++; return account("active", 0).usage!; },
+    blocked: (value: string) => { reason = value; } };
+  assert.equal(await findAutoQuotaSwitch(inputs, excluded), undefined);
+  assert.equal(reads, 0);
+  assert.match(reason, /Daemon login differs/);
 });
 test("manual Codex login during quota verification cancels auto-switch", async () => {
   let checks = 0;

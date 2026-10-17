@@ -86,12 +86,22 @@ static ACCOUNTS_STORE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()
 pub fn with_accounts_store<T>(
     operation: impl FnOnce(&mut AccountsStore) -> Result<T>,
 ) -> Result<T> {
+    with_accounts_store_at(&get_accounts_file()?, operation)
+}
+
+pub(crate) fn with_accounts_store_at<T>(
+    path: &std::path::Path,
+    operation: impl FnOnce(&mut AccountsStore) -> Result<T>,
+) -> Result<T> {
     let _lock = ACCOUNTS_STORE_LOCK
         .lock()
         .map_err(|_| anyhow::anyhow!("Accounts store lock was poisoned"))?;
-    let mut store = load_accounts()?;
+    let _process = super::operation::lock_file(&path.with_extension("lock"))?;
+    let mut store: AccountsStore = if path.exists() {
+        serde_json::from_slice(&fs::read(path)?)?
+    } else { AccountsStore::default() };
     let result = operation(&mut store)?;
-    save_accounts(&store)?;
+    super::atomic::write_private(path, &serde_json::to_vec_pretty(&store)?)?;
     Ok(result)
 }
 
@@ -152,7 +162,7 @@ pub fn save_app_settings(settings: &AppSettings) -> Result<()> {
     }
 
     let content = serde_json::to_string_pretty(settings).context("Failed to serialize settings")?;
-    fs::write(&path, content)
+    super::atomic::write_private(&path, content.as_bytes())
         .with_context(|| format!("Failed to write settings file: {}", path.display()))?;
 
     #[cfg(unix)]
@@ -168,6 +178,8 @@ pub fn save_app_settings(settings: &AppSettings) -> Result<()> {
 /// Save the accounts store to disk
 pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     let path = get_accounts_file()?;
+    let _lock = ACCOUNTS_STORE_LOCK.lock().map_err(|_| anyhow::anyhow!("Accounts store lock was poisoned"))?;
+    let _process = super::operation::lock_file(&path.with_extension("lock"))?;
 
     // Ensure the config directory exists
     if let Some(parent) = path.parent() {
@@ -178,7 +190,7 @@ pub fn save_accounts(store: &AccountsStore) -> Result<()> {
     let content =
         serde_json::to_string_pretty(store).context("Failed to serialize accounts store")?;
 
-    fs::write(&path, content)
+    super::atomic::write_private(&path, content.as_bytes())
         .with_context(|| format!("Failed to write accounts file: {}", path.display()))?;
 
     // Set restrictive permissions on Unix
