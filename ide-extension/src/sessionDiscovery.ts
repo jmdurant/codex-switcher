@@ -42,7 +42,9 @@ export function sessionFromOpenFiles(files: string[]): string | undefined {
 
 /** Discover terminal descendants and their own writer locks; shared daemon
  * locks cannot prove which conversation is attached to a terminal. */
-export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> {
+export async function discoverUnixCodexProcesses(
+  diagnostic?: (pid: number, outcome: string) => void,
+): Promise<UnixCodexProcess[]> {
   if (process.platform === "win32") return [];
   const { stdout } = await promisify(execFile)("ps", ["-ww", "-eo", "pid=,ppid=,args="], { timeout: 3000, maxBuffer: 2 * 1024 * 1024 });
   const rows = new Map<number, { ppid: number; args: string }>();
@@ -53,6 +55,7 @@ export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> 
   const result: UnixCodexProcess[] = [];
   for (const [pid, row] of rows) {
     if (!/(^|\/)codex(?:\s|$)/.test(row.args) || /app-server|codex-switcher/.test(row.args)) continue;
+    diagnostic?.(pid, "candidate");
     const ancestors: number[] = [pid];
     let parent = row.ppid;
     for (let i = 0; i < 32 && parent > 1; i++) {
@@ -77,8 +80,16 @@ export async function discoverUnixCodexProcesses(): Promise<UnixCodexProcess[]> 
         cwd = lsofNames(directory.stdout)[0];
         files = lsofNames(open.stdout);
       }
-      if (cwd?.startsWith("/")) result.push({ processId: pid, ancestors, cwd: path.normalize(cwd), sessionId: sessionFromOpenFiles(files), commandLine: row.args, argv });
-    } catch { /* process exited during the snapshot */ }
+      if (cwd?.startsWith("/")) {
+        const sessionId = sessionFromOpenFiles(files);
+        result.push({ processId: pid, ancestors, cwd: path.normalize(cwd), sessionId, commandLine: row.args, argv });
+        diagnostic?.(pid, sessionId ? "exact_writer_lock" : "no_unique_writer_lock");
+      } else diagnostic?.(pid, "cwd_unavailable");
+    } catch (error) {
+      // Process exits and access errors are expected during a snapshot. Report
+      // only the error category, never process arguments or file contents.
+      diagnostic?.(pid, `inspection_failed:${(error as NodeJS.ErrnoException).code ?? "unknown"}`);
+    }
   }
   return result;
 }

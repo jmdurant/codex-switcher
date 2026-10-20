@@ -403,19 +403,29 @@ async function acceptVerifiedCodexUpdate(terminal: vscode.Terminal, active: Acti
   } finally { updateChecks.delete(terminal); }
 }
 
-function refreshDiscovery(): Promise<void> {
+function refreshDiscovery(diagnostic = false): Promise<void> {
   if (discovering) return discovering;
   if (stopped || !enabled()) return Promise.resolve();
   discovering = (async () => {
     if (process.platform !== "win32") {
-      const processes = await discoverUnixCodexProcesses();
+      const processes = await discoverUnixCodexProcesses(diagnostic
+        ? (pid, outcome) => output.appendLine(`Capture discovery: native PID ${pid} ${outcome}.`)
+        : undefined);
+      if (diagnostic) output.appendLine(`Capture discovery: ${processes.length} inspectable Codex process(es), ${vscode.window.terminals.length} IDE terminal(s).`);
       const usedSessions = new Set<string>();
       for (const terminal of vscode.window.terminals) {
         const terminalPid = await terminal.processId;
-        if (!terminalPid || stopped || !enabled()) continue;
+        if (!terminalPid || stopped || !enabled()) {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal ${terminal.name} has no process ID or discovery is disabled.`);
+          continue;
+        }
         let active = activeExecutions.get(terminal);
-        if (active && active.tool !== "codex") continue;
+        if (active && active.tool !== "codex") {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} is tracked as another tool.`);
+          continue;
+        }
         const matches = processes.filter(entry => entry.ancestors.includes(terminalPid));
+        if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} has ${matches.length} native descendant(s); tracked=${Boolean(active)}, session=${Boolean(active?.sessionId)}.`);
         if (matches.length !== 1) continue;
         const entry = matches[0];
         if (active?.codexProcessId === entry.processId && active.sessionId &&
@@ -426,10 +436,24 @@ function refreshDiscovery(): Promise<void> {
         const sessionId = entry.sessionId;
         // Preserve observed or explicitly linked daemon sessions; native daemon
         // ownership cannot identify a terminal attachment.
-        if (!sessionId) continue;
-        if (!sessionId || usedSessions.has(sessionId)) continue;
-        const session = await codexReader.interactiveSession(sessionId);
-        if (!session || path.normalize(session.cwd) !== path.normalize(entry.cwd)) continue;
+        if (!sessionId) {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} has no unique native writer lock.`);
+          continue;
+        }
+        if (usedSessions.has(sessionId)) {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} duplicates another bound session.`);
+          continue;
+        }
+        let session: { cwd: string } | null;
+        try { session = await codexReader.interactiveSession(sessionId); }
+        catch (error) {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} session verification failed: ${error instanceof Error ? error.name : "unknown"}.`);
+          continue;
+        }
+        if (!session || path.normalize(session.cwd) !== path.normalize(entry.cwd)) {
+          if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} is noninteractive or its workspace differs.`);
+          continue;
+        }
         usedSessions.add(sessionId);
         if (!active) {
           active = { tool: "codex", cwd: entry.cwd, terminalProcessId: terminalPid, discovered: true };
@@ -454,6 +478,7 @@ function refreshDiscovery(): Promise<void> {
       return;
     }
     const owners = await discoverSessions(discoveryScript);
+    if (diagnostic) output.appendLine(`Capture discovery: ${owners.length} Windows owner row(s), ${vscode.window.terminals.length} IDE terminal(s).`);
     for (const terminal of vscode.window.terminals) {
       const pid = await terminal.processId;
       if (!pid || stopped || !enabled()) continue;
@@ -473,6 +498,7 @@ function refreshDiscovery(): Promise<void> {
       }));
       if (stopped || !enabled() || activeExecutions.get(terminal) !== active) continue;
       const owner = uncertain ? undefined : ownerForTerminal(verified.filter(owner => owner !== undefined), pid);
+      if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${pid} has ${candidates.length} owner candidate(s), ${verified.filter(Boolean).length} verified; uncertain=${uncertain}, exact_owner=${Boolean(owner)}, tracked_session=${Boolean(active?.sessionId)}.`);
       if (!owner) {
         if (active?.discovered) {
           active.sessionId = undefined;
@@ -588,9 +614,13 @@ async function captureRequest(request: BridgeRequest): Promise<void> {
   cancelRetries();
   acknowledgedRequests.add(request.requestId);
 
-  // A switch can arrive before the periodic Linux discovery has completed.
-  // Wait for the exact session binding before persisting the capture.
-  if (request.tool === "codex") await refreshDiscovery();
+  // A switch can arrive before periodic discovery completes. Run a fresh,
+  // diagnostic pass after any in-flight pass so a zero-capture response says
+  // which proof was missing rather than only saying the session ID was absent.
+  if (request.tool === "codex") {
+    await refreshDiscovery();
+    await refreshDiscovery(true);
+  }
 
   const sessions: CapturedSession[] = [];
   const reads: Promise<void>[] = [];

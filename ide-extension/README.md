@@ -130,6 +130,13 @@ also invalidates a binding when later `/status` output shows a different ID.
 An unidentified Codex session is excluded from capture regardless of the goal
 continuation setting. `agy` continues to use `agy --continue`.
 
+When capture fails, open **Output → AI Account Switcher Resume** in the editor.
+Version 0.2.27 logs a fresh discovery pass for each switch request: whether the
+editor terminal has a process ID, how many native Codex descendants it has,
+whether one owns an exact writer lock, and whether the session verifies. These
+diagnostics omit credential values and command text. An installed extension
+update takes effect after the editor window reloads.
+
 ### Continuation rules
 
 Version 0.2.2 adds **Cleanup Stale Goal Dialogs**, enabled by default separately
