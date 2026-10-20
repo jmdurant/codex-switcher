@@ -1,6 +1,6 @@
 [package]
 name = "codex-switcher"
-version = "0.2.18"
+version = "0.2.19"
 description = "A multi-account manager for Codex CLI"
 authors = ["lampese"]
 edition = "2021"
@@ -48,3 +48,6 @@ tokio-tungstenite = { version = "0.28", default-features = false, features = ["h
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
 security-framework = "3"
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "=2.4.4"

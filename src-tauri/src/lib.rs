@@ -30,7 +30,16 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    {
+        // Register first so a second desktop launch exits before other plugins
+        // or startup work run. MCP and status-line invocations bypass run().
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            commands::restore_main_window(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
