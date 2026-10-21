@@ -137,10 +137,22 @@ whether one owns an exact writer lock, and whether the session verifies. These
 diagnostics omit credential values and command text. An installed extension
 update takes effect after the editor window reloads.
 
-When a running Codex terminal has no exact session link, version 0.2.28 warns
-early instead of waiting for an exhausted account to reveal the problem. Run
-`/status` in that terminal; the extension verifies and links the displayed
-session ID without needing to close Codex.
+Version 0.2.29 automatically identifies unlinked macOS and Linux Codex terminals,
+including terminals restored after an editor reload. Native process ancestry
+first confirms which terminal owns Codex. The extension reads its local terminal
+buffer through the editor's Accessible View, waits for a stable empty Codex
+composer, requests `/status`, and verifies the fresh Session ID and working
+directory against the running Codex daemon. Typed input, running turns, and
+dialogs defer the request. Identification retries once per minute and again
+before switch capture. Reading may briefly reveal the terminal and its Accessible
+View; the previous terminal or editor is restored afterward. No clipboard access
+or manual session linking is needed for this path.
+
+The read-only client connects to an existing Unix daemon when available, since a
+separate app-server cannot read its loaded conversations. IDE-launched TUIs with
+source `vscode` are accepted only when their originator is `codex-tui`, their
+thread source is `user`, and they have no parent thread. Editor-owned chats and
+subagents are excluded.
 
 ### Continuation rules
 

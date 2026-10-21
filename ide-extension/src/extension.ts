@@ -7,6 +7,8 @@ import * as vscode from "vscode";
 import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCommand, yoloFromCommand, launchFromCommand, launchFromArgs, hasShellSafeArguments, type ResumeLaunch, type ResumeTool } from "./session";
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
+import { identifyAutomaticSession } from "./automaticSession";
+import { readTerminalBuffer } from "./terminalBuffer";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { GoalContinuationPreference } from "./goalPreference";
 import { RetryLedger, RetryPrompt, NetworkResumePrompt, CodexUpdatePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
@@ -92,6 +94,8 @@ let heartbeatWrites: Promise<void> = Promise.resolve();
 let discoveryTimer: NodeJS.Timeout | undefined;
 let discovering: Promise<void> | undefined;
 const unlinkedCodexNotices = new Set<number>();
+const automaticBindings = new Map<vscode.Terminal, Promise<void>>();
+const automaticBindingAfter = new Map<vscode.Terminal, number>();
 let stopped = false;
 let discoveryScript = "";
 let retryTimer: NodeJS.Timeout | undefined;
@@ -262,13 +266,51 @@ function warnAboutUnlinkedCodex(terminal: vscode.Terminal, processId: number): v
   unlinkedCodexNotices.add(processId);
   setTimeout(() => {
     if (stopped || !enabled() || !vscode.window.terminals.includes(terminal) || activeExecutions.get(terminal)?.sessionId) return;
-    output.appendLine(`Codex PID ${processId} has no exact terminal session link or local writer lock; automatic account switching will pause until /status is observed.`);
-    void vscode.window.showWarningMessage(
-      "AI Account Switcher cannot resume this Codex terminal yet. Run /status in Codex to link its session before quota runs out.",
-      "Show terminal",
-    ).then(choice => { if (choice === "Show terminal") terminal.show(false); });
+    output.appendLine(`Codex PID ${processId} is awaiting automatic identification. The extension will request /status when its terminal has a fresh empty prompt.`);
   }, 5_000);
 }
+
+async function bindAutomatically(terminal: vscode.Terminal, active: ActiveExecution, diagnostic: boolean): Promise<void> {
+  const pending = automaticBindings.get(terminal);
+  if (pending) return pending;
+  if (!diagnostic && Date.now() < (automaticBindingAfter.get(terminal) ?? 0)) return;
+  automaticBindingAfter.set(terminal, Date.now() + 60_000);
+  const valid = () => {
+    if (stopped || !enabled() || !vscode.window.terminals.includes(terminal) || activeExecutions.get(terminal) !== active || !active.codexProcessId) return false;
+    try { process.kill(active.codexProcessId, 0); return true; } catch { return false; }
+  };
+  const binding = (async () => {
+    output.appendLine(`Checking automatic session identification for Codex PID ${active.codexProcessId}.`);
+    const id = await identifyAutomaticSession({
+      valid,
+      read: () => readTerminalBuffer(terminal),
+      status: () => {
+        output.appendLine(`Requesting /status automatically in Codex PID ${active.codexProcessId}.`);
+        // Separate writes let the TUI process the slash command before Enter.
+        terminal.sendText("/status", false);
+        automaticStatusEnter.add(terminal);
+      },
+      verify: id => codexReader.isInteractiveSession(id, active.cwd),
+      wait: async ms => {
+        await new Promise(resolve => setTimeout(resolve, ms));
+        if (valid() && automaticStatusEnter.delete(terminal)) terminal.sendText("", true);
+      },
+    });
+    if (!valid()) return;
+    if (id) {
+      active.sessionId = id;
+      active.discovered = false;
+      output.appendLine(`Automatically linked Codex PID ${active.codexProcessId} to its verified /status session.`);
+      queueHeartbeat();
+    } else if (!active.sessionId) {
+      output.appendLine(`Automatic identification deferred for Codex PID ${active.codexProcessId}: a fresh empty prompt or verified status response is not available.`);
+    }
+  })().catch(error => output.appendLine(`Automatic session identification failed: ${error instanceof Error ? error.message : "unknown error"}`));
+  automaticBindings.set(terminal, binding);
+  try { await binding; } finally { automaticBindings.delete(terminal); automaticStatusEnter.delete(terminal); }
+}
+
+const automaticStatusEnter = new Set<vscode.Terminal>();
 
 async function recordResumeOutcome(outcomeBase: string | undefined, state: string): Promise<void> {
   if (!outcomeBase) return;
@@ -340,12 +382,18 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
         clearPendingGoal(terminal);
         output.appendLine("Codex session changed; link the current session again before goal continuation.");
       }
-      if (observedId && !active.sessionId && await within(codexReader.isInteractiveSession(observedId, active.cwd), 700)) {
+      if (observedId && !active.sessionId) {
+        const verified = await within(codexReader.isInteractiveSession(observedId, active.cwd), 8500);
         if (activeExecutions.get(terminal) !== active) return;
-        active.sessionId = observedId;
-        active.discovered = false;
-        output.appendLine("Linked the exact session ID shown by Codex /status.");
-        queueHeartbeat();
+        if (verified) {
+          active.sessionId = observedId;
+          active.discovered = false;
+          output.appendLine("Linked the exact session ID shown by Codex /status.");
+          queueHeartbeat();
+        } else {
+          output.appendLine("Observed /status, but session or workspace verification failed. Automatic terminal identification will retry.");
+          tail = "";
+        }
       }
       const attempt = resumeAttempts.get(terminal);
       if (observedId && attempt && !attempt.verified && attempt.sessionId === observedId && active.sessionId === observedId) {
@@ -426,6 +474,20 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
         ? (pid, outcome) => output.appendLine(`Capture discovery: native PID ${pid} ${outcome}.`)
         : undefined);
       if (diagnostic) output.appendLine(`Capture discovery: ${processes.length} inspectable Codex process(es), ${vscode.window.terminals.length} IDE terminal(s).`);
+      // A persistent terminal can outlive the extension host. Remove recovered
+      // entries once their native process has exited so resume can reuse it.
+      const livePids = new Set(processes.map(entry => entry.processId));
+      for (const [terminal, active] of activeExecutions) {
+        if (active.codexProcessId && !livePids.has(active.codexProcessId) && !active.execution) {
+          try { process.kill(active.codexProcessId, 0); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+              activeExecutions.delete(terminal);
+              clearPendingGoal(terminal);
+            }
+          }
+        }
+      }
       const usedSessions = new Set<string>();
       for (const terminal of vscode.window.terminals) {
         const terminalPid = await terminal.processId;
@@ -442,6 +504,25 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
         if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} has ${matches.length} native descendant(s); tracked=${Boolean(active)}, session=${Boolean(active?.sessionId)}.`);
         if (matches.length !== 1) continue;
         const entry = matches[0];
+        if (!active) {
+          active = { tool: "codex", cwd: entry.cwd, terminalProcessId: terminalPid,
+            codexProcessId: entry.processId, discovered: true };
+          activeExecutions.set(terminal, active);
+          queueHeartbeat();
+        }
+        if (active.codexProcessId && active.codexProcessId !== entry.processId) {
+          active.sessionId = undefined;
+          clearPendingGoal(terminal);
+        }
+        active.codexProcessId = entry.processId;
+        if (!active.launch && !active.launchError) {
+          try {
+            if (!entry.argv && /(?:^|\s)(?:-c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--enable|--disable)(?:\s|=)/.test(entry.commandLine)) {
+              throw new Error("Launch options cannot be recovered exactly from this Unix process.");
+            }
+            active.launch = entry.argv ? launchFromArgs(entry.argv) : launchFromCommand(entry.commandLine);
+          } catch (error) { active.launchError = String(error); }
+        }
         if (active?.codexProcessId === entry.processId && active.sessionId &&
             path.normalize(active.cwd) === path.normalize(entry.cwd)) {
           usedSessions.add(active.sessionId);
@@ -452,7 +533,10 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
         // ownership cannot identify a terminal attachment.
         if (!sessionId) {
           if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} has no unique native writer lock.`);
-          if (!active?.sessionId) warnAboutUnlinkedCodex(terminal, entry.processId);
+          if (!active.sessionId) {
+            warnAboutUnlinkedCodex(terminal, entry.processId);
+            await bindAutomatically(terminal, active, diagnostic);
+          }
           continue;
         }
         if (usedSessions.has(sessionId)) {
@@ -470,18 +554,6 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
           continue;
         }
         usedSessions.add(sessionId);
-        if (!active) {
-          active = { tool: "codex", cwd: entry.cwd, terminalProcessId: terminalPid, discovered: true };
-          activeExecutions.set(terminal, active);
-        }
-        if (!active.launch && !active.launchError) {
-          try {
-            if (!entry.argv && /(?:^|\\s)(?:-c|--config|-m|--model|-p|--profile|-s|--sandbox|-a|--ask-for-approval|-C|--cd|--add-dir|--enable|--disable)(?:\\s|=)/.test(entry.commandLine)) {
-              throw new Error("Launch options cannot be recovered exactly from this Unix process. Relaunch with shell integration before switching.");
-            }
-            active.launch = entry.argv ? launchFromArgs(entry.argv) : launchFromCommand(entry.commandLine);
-          } catch (error) { active.launchError = String(error); }
-        }
         active.cwd = entry.cwd;
         active.terminalProcessId = terminalPid;
         active.sessionId = sessionId;
@@ -1045,6 +1117,8 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
+      automaticBindingAfter.delete(terminal);
+      automaticStatusEnter.delete(terminal);
       resumeAttempts.delete(terminal);
       retryPending.delete(terminal);
       networkResumePending.delete(terminal);

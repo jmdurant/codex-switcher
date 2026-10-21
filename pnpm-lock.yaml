@@ -56,6 +56,10 @@ importers:
         version: 7.3.1(@types/node@24.13.3)(jiti@2.6.1)(lightningcss@1.30.2)
 
   ide-extension:
+    dependencies:
+      ws:
+        specifier: ^8.18.3
+        version: 8.22.0
     devDependencies:
       '@types/node':
         specifier: ^24.0.0
@@ -63,6 +67,9 @@ importers:
       '@types/vscode':
         specifier: ^1.107.0
         version: 1.134.0
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.2
       esbuild:
         specifier: ^0.25.0
         version: 0.25.12
@@ -71,6 +78,21 @@ importers:
         version: 5.8.3
 
 packages:
+
+  '@types/ws@8.18.2':
+    resolution: {integrity: sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w==}
+
+  ws@8.22.0:
+    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
   '@babel/code-frame@7.28.6':
     resolution: {integrity: sha512-JYgintcMjRiCvS8mMECzaEn+m3PfoQiyqukOMCCVQtoJGYJw8j/8LBJEiqkHLkfwCcs74E3pbAUFNg7d9VNJ+Q==}
@@ -1142,6 +1164,12 @@ packages:
     resolution: {integrity: sha512-a4UGQaWPH59mOXUYnAG2ewncQS4i4F43Tv3JoAM+s2VDAmS9NsK8GpDMLrCHPksFT7h3K6TOoUNn2pb7RoXx4g==}
 
 snapshots:
+
+  '@types/ws@8.18.2':
+    dependencies:
+      '@types/node': 24.13.3
+
+  ws@8.22.0: {}
 
   '@babel/code-frame@7.28.6':
     dependencies:

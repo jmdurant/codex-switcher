@@ -2,9 +2,18 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createRequire } from "node:module";
+import * as os from "node:os";
+import WebSocket from "ws";
 import { SESSION_ID, validGoal, type Goal } from "./goal.ts";
 
 export interface Launch { executable: string; args: string[]; env?: NodeJS.ProcessEnv }
+
+function interactiveTerminalThread(thread: any): boolean {
+  return thread.parentThreadId === null && (thread.source === "cli" ||
+    // Modern TUIs launched inside VS Code inherit its source classification.
+    // Their explicit originator distinguishes them from editor-owned chats.
+    (thread.source === "vscode" && thread.originator === "codex-tui" && thread.threadSource === "user"));
+}
 
 /** Resolve npm's native binary directly: its JS shim does not hide child windows. */
 export async function nativeCodexFromScript(script: string, arch = process.arch): Promise<string> {
@@ -39,58 +48,88 @@ export async function codexLaunch(): Promise<Launch> {
 /** This client exposes read-only methods; it never starts turns or changes goals. */
 export class CodexReader {
   private child?: ChildProcessWithoutNullStreams;
+  private socket?: WebSocket;
+  private send?: (message: unknown) => void;
   private ready?: Promise<void>;
   private sequence = 0;
   private pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
   private launch: () => Promise<Launch>;
   private timeoutMs: number;
   private listTimeoutMs: number;
-  constructor(launch: () => Promise<Launch> = codexLaunch, timeoutMs = 4000, listTimeoutMs = 30000) {
+  private daemonPath?: string;
+  constructor(launch: () => Promise<Launch> = codexLaunch, timeoutMs = 4000, listTimeoutMs = 30000, daemonPath?: string) {
     this.launch = launch;
     this.timeoutMs = timeoutMs;
     this.listTimeoutMs = listTimeoutMs;
+    this.daemonPath = daemonPath ?? (launch === codexLaunch && process.platform !== "win32"
+      ? path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "app-server-control", "app-server-control.sock") : undefined);
+  }
+
+  private receive(message: any): void {
+    const entry = this.pending.get(message.id);
+    if (!entry || message.method) return;
+    clearTimeout(entry.timer); this.pending.delete(message.id);
+    if (message.error) entry.reject(new Error(`Codex read request failed (${message.error.code ?? "unknown"}).`));
+    else entry.resolve(message.result);
   }
 
   private async connect(): Promise<void> {
     if (this.ready) return this.ready;
     this.ready = (async () => {
-      const launch = await this.launch();
-      const child = spawn(launch.executable, launch.args, { shell: false, windowsHide: true, stdio: "pipe", env: launch.env ?? process.env });
-      this.child = child;
-      let buffer = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.resume();
-      child.stdin.on("error", () => this.dispose());
-      child.on("error", () => this.dispose());
-      child.on("exit", () => { if (this.child === child) this.dispose(); });
-      child.stdout.on("data", (chunk: string) => {
-        buffer += chunk;
-        if (buffer.length > 8 * 1024 * 1024) { this.dispose(); return; }
-        let newline: number;
-        while ((newline = buffer.indexOf("\n")) >= 0) {
-          const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
-          try {
-            const message = JSON.parse(line);
-            const entry = this.pending.get(message.id);
-            if (!entry) continue;
-            clearTimeout(entry.timer); this.pending.delete(message.id);
-            if (message.error) entry.reject(new Error(`Codex read request failed (${message.error.code ?? "unknown"}).`));
-            else entry.resolve(message.result);
-          } catch { /* Ignore non-protocol output; requests still time out. */ }
-        }
-      });
+      const daemon = this.daemonPath && await fs.stat(this.daemonPath).then(s => s.isSocket(), () => false);
+      if (daemon) {
+        // Query the runtime that already owns the terminal's conversation.
+        // A separate app-server cannot read daemon-only loaded threads.
+        const socket = new WebSocket(`ws+unix://${this.daemonPath}:/`, {
+          handshakeTimeout: this.timeoutMs, maxPayload: 8 * 1024 * 1024,
+          perMessageDeflate: false,
+        });
+        this.socket = socket;
+        socket.on("message", data => {
+          try { this.receive(JSON.parse(data.toString())); } catch { this.dispose(); }
+        });
+        socket.on("error", () => { if (this.socket === socket) this.dispose(); });
+        socket.on("close", () => { if (this.socket === socket) this.dispose(); });
+        await new Promise<void>((resolve, reject) => {
+          socket.once("open", resolve);
+          socket.once("error", reject);
+        });
+        this.send = message => socket.send(JSON.stringify(message));
+      } else {
+        const launch = await this.launch();
+        const child = spawn(launch.executable, launch.args, { shell: false, windowsHide: true, stdio: "pipe", env: launch.env ?? process.env });
+        this.child = child;
+        let buffer = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.resume();
+        child.stdin.on("error", () => this.dispose());
+        child.on("error", () => this.dispose());
+        child.on("exit", () => { if (this.child === child) this.dispose(); });
+        child.stdout.on("data", (chunk: string) => {
+          buffer += chunk;
+          if (buffer.length > 8 * 1024 * 1024) { this.dispose(); return; }
+          let newline: number;
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
+            try {
+              this.receive(JSON.parse(line));
+            } catch { /* Ignore non-protocol output; requests still time out. */ }
+          }
+        });
+        this.send = message => child.stdin.write(JSON.stringify(message) + "\n");
+      }
       await this.request("initialize", { clientInfo: { name: "ai-account-switcher-resume", version: "0.2.0" }, capabilities: { experimentalApi: true } });
-      child.stdin.write(JSON.stringify({ method: "initialized" }) + "\n");
+      this.send!({ method: "initialized" });
     })();
     try { await this.ready; } catch (error) { this.dispose(); throw error; }
   }
   private request(method: string, params: unknown, timeoutMs = this.timeoutMs): Promise<any> {
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
-      if (!this.child) { reject(new Error("Codex reader is not connected.")); return; }
+      if (!this.send) { reject(new Error("Codex reader is not connected.")); return; }
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Codex ${method} timed out.`)); }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+      this.send({ id, method, params });
     });
   }
   private async readThread(threadId: string, cwd?: string): Promise<any> {
@@ -103,12 +142,12 @@ export class CodexReader {
   }
   async isInteractiveSession(threadId: string, cwd: string): Promise<boolean> {
     const thread = await this.readThread(threadId, cwd);
-    return thread.source === "cli" && thread.parentThreadId === null;
+    return interactiveTerminalThread(thread);
   }
   /** Only use after native process ancestry has tied this ID to a terminal. */
   async interactiveSession(threadId: string): Promise<{ cwd: string } | null> {
     const thread = await this.readThread(threadId);
-    return thread.source === "cli" && thread.parentThreadId === null ? { cwd: thread.cwd } : null;
+    return interactiveTerminalThread(thread) ? { cwd: thread.cwd } : null;
   }
   /** Recency never establishes terminal ownership. Retained for old callers;
    * exact IDs must come from native ownership, /status, or explicit linking. */
@@ -134,6 +173,8 @@ export class CodexReader {
   }
   dispose(): void {
     const child = this.child; this.child = undefined; this.ready = undefined;
+    const socket = this.socket; this.socket = undefined; this.send = undefined;
+    if (socket) socket.terminate();
     for (const entry of this.pending.values()) { clearTimeout(entry.timer); entry.reject(new Error("Codex reader disconnected.")); }
     this.pending.clear();
     if (child) {

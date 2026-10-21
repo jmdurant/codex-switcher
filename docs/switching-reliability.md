@@ -48,9 +48,19 @@ value options require explicit linking when the original argument boundaries
 cannot be recovered. Shell expansions and ambiguous quoting are reported instead
 of replayed with changed meaning.
 
-Bridge protocol 2 rejects old companion hosts. After installing 0.2.26, reload the
-editor. For an existing daemon terminal, run /status; if needed, use
-**AI Account Switcher: Link Codex Session** and supply the original launch command.
+Bridge protocol 2 rejects old companion hosts. Reload the editor after installing
+a companion update. Version 0.2.29 automatically identifies unlinked macOS/Linux
+terminals, including restored terminals: native ancestry establishes the terminal
+owner, then a stable empty composer permits a fixed `/status` request. The fresh
+response is read through the editor's Accessible View and verified against the
+running local daemon. Typed input and busy/dialog prompts defer identification;
+historical status text alone never authorizes a binding. The existing manual
+linking command remains available for unsupported terminal states.
+
+The reader uses the existing Unix daemon socket when present. A separate app-server
+cannot read daemon-only loaded threads. Modern IDE-launched TUIs can report source
+`vscode`; these qualify only with originator `codex-tui`, thread source `user`, and
+no parent thread. Editor-owned chats and subagents remain excluded.
 
 ## Verification
 

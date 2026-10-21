@@ -4,6 +4,8 @@ import { CodexReader, nativeCodexFromScript } from "../src/codexRpc.ts";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as os from "node:os";
+import * as http from "node:http";
+import { WebSocketServer } from "ws";
 
 test("Windows npm installs resolve native binaries without spawning the visible shim", async () => {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codex-native-launch-")));
@@ -25,6 +27,39 @@ test("Windows npm installs resolve native binaries without spawning the visible 
 });
 
 const id = "01991234-1234-7123-8123-123456789abc";
+
+test("reads an IDE terminal's loaded conversation from the existing Unix daemon", { skip: process.platform === "win32" }, async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "switcher-daemon-"));
+  const socketPath = path.join(root, "daemon.sock");
+  const server = http.createServer();
+  const sockets = new WebSocketServer({ server });
+  const methods: string[] = [];
+  sockets.on("connection", socket => socket.on("message", data => {
+    const q = JSON.parse(data.toString());
+    methods.push(q.method);
+    if (q.method === "initialized") return;
+    const result = q.method === "initialize" ? {} : { thread: {
+      id: q.params.threadId, cwd: root, source: "vscode", originator: "codex-tui", threadSource: "user", parentThreadId: null,
+    } };
+    socket.send(JSON.stringify({ method: "thread/status/changed", params: {} }));
+    socket.send(JSON.stringify({ id: q.id, result }));
+  }));
+  await new Promise<void>(resolve => server.listen(socketPath, resolve));
+  let launched = false;
+  const reader = new CodexReader(async () => { launched = true; throw new Error("Must not start a separate app-server"); }, 1000, 1000, socketPath);
+  try {
+    assert.equal(await reader.isInteractiveSession(id, root), true);
+    await assert.rejects(reader.isInteractiveSession(id, "/wrong-workspace"), /workspace/);
+    assert.equal(launched, false);
+    assert.deepEqual(methods, ["initialize", "initialized", "thread/read", "thread/read"]);
+  } finally {
+    reader.dispose();
+    for (const socket of sockets.clients) socket.terminate();
+    await new Promise<void>(resolve => sockets.close(() => resolve()));
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
 const fixture = `
 const readline = require('node:readline');
 readline.createInterface({input:process.stdin}).on('line', line => {
@@ -81,6 +116,10 @@ test("reader rejects malformed goals instead of assuming they are resumable", as
 test("automatic discovery accepts only root interactive CLI threads", async () => {
   for (const [metadata, expected] of [
     ["source:'cli',parentThreadId:null", true],
+    ["source:'vscode',originator:'codex-tui',threadSource:'user',parentThreadId:null", true],
+    ["source:'vscode',originator:'codex-vscode',threadSource:'user',parentThreadId:null", false],
+    ["source:'vscode',originator:'codex-tui',threadSource:'agent',parentThreadId:null", false],
+    ["source:'vscode',originator:'codex-tui',threadSource:'user',parentThreadId:'parent'", false],
     ["source:'exec',parentThreadId:null", false],
     ["source:'cli',parentThreadId:'parent'", false],
     ["source:'unknown',parentThreadId:null", false],
