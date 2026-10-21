@@ -137,6 +137,11 @@ whether one owns an exact writer lock, and whether the session verifies. These
 diagnostics omit credential values and command text. An installed extension
 update takes effect after the editor window reloads.
 
+When a running Codex terminal has no exact session link, version 0.2.28 warns
+early instead of waiting for an exhausted account to reveal the problem. Run
+`/status` in that terminal; the extension verifies and links the displayed
+session ID without needing to close Codex.
+
 ### Continuation rules
 
 Version 0.2.2 adds **Cleanup Stale Goal Dialogs**, enabled by default separately

@@ -91,6 +91,7 @@ let polling = false;
 let heartbeatWrites: Promise<void> = Promise.resolve();
 let discoveryTimer: NodeJS.Timeout | undefined;
 let discovering: Promise<void> | undefined;
+const unlinkedCodexNotices = new Set<number>();
 let stopped = false;
 let discoveryScript = "";
 let retryTimer: NodeJS.Timeout | undefined;
@@ -255,6 +256,19 @@ async function pollCapacityRetries(): Promise<void> {
 const activeExecutions = new Map<vscode.Terminal, ActiveExecution>();
 const terminalExecutions = new Map<vscode.Terminal, vscode.TerminalShellExecution>();
 const resumeAttempts = new Map<vscode.Terminal, { sessionId?: string; startedAt: number; execution?: vscode.TerminalShellExecution; verified?: boolean; outcomeBase?: string }>();
+
+function warnAboutUnlinkedCodex(terminal: vscode.Terminal, processId: number): void {
+  if (unlinkedCodexNotices.has(processId)) return;
+  unlinkedCodexNotices.add(processId);
+  setTimeout(() => {
+    if (stopped || !enabled() || !vscode.window.terminals.includes(terminal) || activeExecutions.get(terminal)?.sessionId) return;
+    output.appendLine(`Codex PID ${processId} has no exact terminal session link or local writer lock; automatic account switching will pause until /status is observed.`);
+    void vscode.window.showWarningMessage(
+      "AI Account Switcher cannot resume this Codex terminal yet. Run /status in Codex to link its session before quota runs out.",
+      "Show terminal",
+    ).then(choice => { if (choice === "Show terminal") terminal.show(false); });
+  }, 5_000);
+}
 
 async function recordResumeOutcome(outcomeBase: string | undefined, state: string): Promise<void> {
   if (!outcomeBase) return;
@@ -438,6 +452,7 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
         // ownership cannot identify a terminal attachment.
         if (!sessionId) {
           if (diagnostic) output.appendLine(`Capture discovery: terminal PID ${terminalPid} has no unique native writer lock.`);
+          if (!active?.sessionId) warnAboutUnlinkedCodex(terminal, entry.processId);
           continue;
         }
         if (usedSessions.has(sessionId)) {
