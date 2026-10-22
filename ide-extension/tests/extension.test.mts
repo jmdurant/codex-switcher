@@ -15,7 +15,7 @@ const compiled = await build({
   platform: "node", format: "cjs", external: ["vscode"],
   plugins: [{ name: "mock-codex-reader", setup(builder) {
     builder.onResolve({ filter: /codexRpc$/ }, () => ({ path: "reader", namespace: "test" }));
-    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async interactiveSession() { return { cwd: globalThis.testSessionCwd }; } async isInteractiveSession() { return true; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
+    builder.onLoad({ filter: /.*/, namespace: "test" }, () => ({ contents: `export class CodexReader { async latestTurn() { return globalThis.readTestTurn?.() ?? null; } async interactiveSession() { return { cwd: globalThis.testSessionCwd }; } async isInteractiveSession() { return globalThis.verifyTestSession ? globalThis.verifyTestSession() : true; } async readGoal(id, cwd) { return globalThis.readTestGoal(id, cwd); } dispose() {} }` }));
     builder.onResolve({ filter: /sessionDiscovery$/ }, () => ({ path: "discovery", namespace: "discovery-test" }));
     builder.onLoad({ filter: /.*/, namespace: "discovery-test" }, () => ({ contents: `
       export { ownerForTerminal } from ${JSON.stringify(path.resolve("src/sessionDiscovery.ts"))};
@@ -33,6 +33,7 @@ async function capacityScenario(change: string) {
   let now = Date.now(), mode = change === "ask" ? "ask" : "automatic";
   let turn: any = { id: requestId, status: "failed", error: { codexErrorInfo: "serverOverloaded" }, completedAt: Math.floor(now / 1000) };
   let goal: any = null;
+  let verificationCalls = 0;
   const disposable = { dispose() {} };
   const terminal: any = { name: "Codex", processId: Promise.resolve(11), show() {}, sendText: (s: string) => sent.push(s), shellIntegration: { cwd: { fsPath: root } } };
   const vscode: any = {
@@ -56,12 +57,21 @@ async function capacityScenario(change: string) {
     module, exports: module.exports, process: { ...process, platform: "linux" }, console, Buffer, performance, Date: Clock,
     require: (name: string) => name === "vscode" ? vscode : name === "node:os" ? { ...os, homedir: () => root } : require(name),
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
-    readTestGoal: () => goal, readTestTurn: () => turn, getTestOwners: () => []
+    readTestGoal: () => goal, readTestTurn: () => turn, getTestOwners: () => [],
+    verifyTestSession: () => { verificationCalls++; if (change === "status_retry" && verificationCalls === 1) throw new Error("transient verification failure"); return true; }
   });
   try {
     module.exports.activate({ subscriptions: [], extensionPath: root });
-    const ex = execution(`codex resume ${id}`);
+    const ex = execution(change === "status_retry" ? "codex" : `codex resume ${id}`);
     events.start({ terminal, execution: ex, shellIntegration: terminal.shellIntegration });
+    if (change === "status_retry") {
+      ex.push(`\r\nSession: ${id}\r\n`);
+      await until(() => messages.some(s => s.includes("verification failed")));
+      ex.push(`\r\nSession: ${id}\r\n`);
+      await until(() => messages.some(s => s.includes("Linked the exact session ID")));
+      assert.equal(verificationCalls, 2);
+      return;
+    }
     ex.push("\r\n› Ask Codex to do anything\r\n");
     await new Promise(resolve => setTimeout(resolve, 10));
     if (change === "focused") vscode.window.activeTerminal = terminal;
@@ -106,7 +116,7 @@ async function capacityScenario(change: string) {
     else assert.deepEqual(sent,[]);
   } finally { await module.exports.deactivate(); await fs.rm(root,{recursive:true,force:true}); }
 }
-for (const change of ["success","ask","focused","quota","running","paused","blocked","budget_limited","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
+for (const change of ["status_retry","success","ask","focused","quota","running","paused","blocked","budget_limited","unobserved","focus_during_wait","disabled","new_turn","typing","goal_changed"]) {
   test(`capacity extension flow: ${change}`, () => capacityScenario(change));
 }
 for (const change of ["network_success","network_after_switch","network_blocked","network_blocked_pending","network_switch_idle","network_switch_idle_pending","network_other_error","network_goal_complete","network_prompt_changed"]) {

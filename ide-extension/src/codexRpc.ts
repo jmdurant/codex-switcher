@@ -137,7 +137,13 @@ export class CodexReader {
     await this.connect();
     const { thread } = await this.request("thread/read", { threadId, includeTurns: false });
     const normalize = (value: string) => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
-    if (!thread || thread.id !== threadId || typeof thread.cwd !== "string" || !path.isAbsolute(thread.cwd) || (cwd !== undefined && normalize(thread.cwd) !== normalize(cwd))) throw new Error("Codex session does not match the terminal workspace.");
+    if (!thread || thread.id !== threadId || typeof thread.cwd !== "string" || !path.isAbsolute(thread.cwd)) throw new Error("Invalid Codex session workspace.");
+    if (cwd !== undefined && normalize(thread.cwd) !== normalize(cwd)) {
+      const [threadPath, terminalPath] = await Promise.all([
+        fs.realpath(thread.cwd).catch(() => undefined), fs.realpath(cwd).catch(() => undefined),
+      ]);
+      if (!threadPath || !terminalPath || normalize(threadPath) !== normalize(terminalPath)) throw new Error("Codex session does not match the terminal workspace.");
+    }
     return thread;
   }
   async isInteractiveSession(threadId: string, cwd: string): Promise<boolean> {

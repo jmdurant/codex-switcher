@@ -9,7 +9,7 @@ import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { identifyAutomaticSession } from "./automaticSession";
 import { redrawTerminal } from "./terminalRedraw";
-import { readTerminalBuffer, startTerminalObservation, observeTerminalOutput } from "./terminalBuffer";
+import { readTerminalBuffer, startTerminalObservation, observeTerminalOutput, resizeTerminalBuffer, resetTerminalBuffer } from "./terminalBuffer";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { GoalContinuationPreference } from "./goalPreference";
 import { RetryLedger, RetryPrompt, NetworkResumePrompt, CodexUpdatePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
@@ -285,7 +285,7 @@ async function bindAutomatically(terminal: vscode.Terminal, active: ActiveExecut
     // Recover the current composer after missed startup output. A repaint
     // preserves existing input and does not open editor UI.
     if ((await readTerminalBuffer(terminal))?.composer !== "empty" && valid()) {
-      await redrawTerminal(active.codexProcessId!, valid).catch(() => undefined);
+      await redrawTerminal(active.codexProcessId!, valid, (columns, rows) => resizeTerminalBuffer(terminal, columns, rows)).catch(() => undefined);
       await new Promise(resolve => setTimeout(resolve, 150));
     }
     const id = await identifyAutomaticSession({
@@ -376,7 +376,8 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
       }
       tail = (tail + chunk).slice(-8192);
       // A subsequently displayed different /status invalidates the explicit binding.
-      const observedId = sessionIdFromStatus(tail);
+      const observedId = sessionIdFromStatus(tail) ?? (await readTerminalBuffer(terminal))?.statusId;
+      if (activeExecutions.get(terminal) !== active) return;
       if (observedId && active.sessionId && observedId !== active.sessionId) {
         active.retryPrompt?.invalidate();
         active.networkResumePrompt?.invalidate();
@@ -387,7 +388,7 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
         output.appendLine("Codex session changed; link the current session again before goal continuation.");
       }
       if (observedId && !active.sessionId) {
-        const verified = await within(codexReader.isInteractiveSession(observedId, active.cwd), 8500);
+        const verified = await within(codexReader.isInteractiveSession(observedId, active.cwd), 8500).catch(() => false);
         if (activeExecutions.get(terminal) !== active) return;
         if (verified) {
           active.sessionId = observedId;
@@ -516,6 +517,7 @@ function refreshDiscovery(diagnostic = false): Promise<void> {
         }
         if (active.codexProcessId && active.codexProcessId !== entry.processId) {
           active.sessionId = undefined;
+          resetTerminalBuffer(terminal);
           clearPendingGoal(terminal);
         }
         active.codexProcessId = entry.processId;
@@ -1037,6 +1039,7 @@ export function activate(context: vscode.ExtensionContext): void {
       terminalExecutions.set(event.terminal, event.execution);
       const tool = classifyCommand(event.execution.commandLine.value);
       if (!tool) return;
+      resetTerminalBuffer(event.terminal);
       const attempt = resumeAttempts.get(event.terminal);
       if (attempt && !attempt.execution) attempt.execution = event.execution;
       const cwd = event.shellIntegration.cwd?.fsPath ?? workspaceFolders()[0];

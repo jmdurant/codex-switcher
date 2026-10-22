@@ -44,3 +44,12 @@ export function startTerminalObservation(context: vscode.ExtensionContext, log: 
 export async function readTerminalBuffer(terminal: vscode.Terminal): Promise<TerminalSnapshot | undefined> {
   return screens.get(terminal)?.snapshot();
 }
+
+export function resizeTerminalBuffer(terminal: vscode.Terminal, columns: number, rows: number): void {
+  screen(terminal).resize(columns, rows);
+}
+
+export function resetTerminalBuffer(terminal: vscode.Terminal): void {
+  screens.get(terminal)?.dispose();
+  screens.delete(terminal);
+}

@@ -159,6 +159,11 @@ editor with `--enable-proposed-api jmdurant.ai-account-switcher-resume`. When th
 API is unavailable, fresh shell executions are still observed and the output log
 explains the missing capability. There is no UI-based fallback.
 
+Version 0.2.31 resolves workspace symlinks before rejecting a session directory,
+keeps reading terminal output after a failed status verification, and reads the
+actual macOS PTY dimensions when the proposed dimensions API is unavailable.
+New Codex executions discard the previous process's screen and session evidence.
+
 The read-only client connects to an existing Unix daemon when available, since a
 separate app-server cannot read its loaded conversations. IDE-launched TUIs with
 source `vscode` are accepted only when their originator is `codex-tui`, their

@@ -49,9 +49,12 @@ test("reads an IDE terminal's loaded conversation from the existing Unix daemon"
   const reader = new CodexReader(async () => { launched = true; throw new Error("Must not start a separate app-server"); }, 1000, 1000, socketPath);
   try {
     assert.equal(await reader.isInteractiveSession(id, root), true);
+    const alias = path.join(root, "workspace-alias");
+    await fs.symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
+    assert.equal(await reader.isInteractiveSession(id, alias), true, "a symlink to the same workspace is valid");
     await assert.rejects(reader.isInteractiveSession(id, "/wrong-workspace"), /workspace/);
     assert.equal(launched, false);
-    assert.deepEqual(methods, ["initialize", "initialized", "thread/read", "thread/read"]);
+    assert.deepEqual(methods, ["initialize", "initialized", "thread/read", "thread/read", "thread/read"]);
   } finally {
     reader.dispose();
     for (const socket of sockets.clients) socket.terminate();

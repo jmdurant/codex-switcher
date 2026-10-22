@@ -5,12 +5,17 @@ const execute = promisify(execFile);
 
 /** A same-size SIGWINCH does not repaint Codex. Briefly change its PTY width
  * and restore it, without touching the composer, focus, or editor layout. */
-export async function redrawTerminal(processId: number, valid: () => boolean): Promise<void> {
+export async function redrawTerminal(processId: number, valid: () => boolean, resize?: (columns: number, rows: number) => void): Promise<void> {
   if (process.platform !== "darwin" || !Number.isSafeInteger(processId) || processId <= 0 || !valid()) return;
   const options = {timeout: 2000, maxBuffer: 4096};
   const {stdout} = await execute("/bin/ps", ["-o", "tty=", "-p", String(processId)], options);
   const tty = stdout.trim();
   if (!/^ttys\d+$/.test(tty) || !valid()) return;
+  const device = `/dev/${tty}`;
+  const size = await execute("/bin/stty", ["-f", device, "size"], options);
+  const dimensions = size.stdout.trim().match(/^(\d+)\s+(\d+)$/);
+  if (!dimensions || !valid()) return;
+  resize?.(Number(dimensions[2]), Number(dimensions[1]));
   // Keep restoration in the child so an extension-host reload cannot strand
   // the PTY at the temporary size. A real user resize takes precedence.
   await execute("/bin/sh", ["-c", `
@@ -30,5 +35,5 @@ restore() {
 trap restore EXIT HUP INT TERM
 /bin/stty -f "$device" columns "$narrow" || exit 0
 /bin/sleep 0.2
-`, "switcher-terminal-redraw", `/dev/${tty}`], options);
+`, "switcher-terminal-redraw", device], options);
 }
