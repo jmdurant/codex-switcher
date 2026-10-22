@@ -137,16 +137,27 @@ whether one owns an exact writer lock, and whether the session verifies. These
 diagnostics omit credential values and command text. An installed extension
 update takes effect after the editor window reloads.
 
-Version 0.2.29 automatically identifies unlinked macOS and Linux Codex terminals,
-including terminals restored after an editor reload. Native process ancestry
-first confirms which terminal owns Codex. The extension reads its local terminal
-buffer through the editor's Accessible View, waits for a stable empty Codex
-composer, requests `/status`, and verifies the fresh Session ID and working
-directory against the running Codex daemon. Typed input, running turns, and
-dialogs defer the request. Identification retries once per minute and again
-before switch capture. Reading may briefly reveal the terminal and its Accessible
-View; the previous terminal or editor is restored afterward. No clipboard access
-or manual session linking is needed for this path.
+Version 0.2.30 automatically identifies unlinked macOS and Linux Codex terminals,
+including terminals restored after an editor reload, through a silent output
+stream. It maintains an in-memory terminal screen and recognizes empty composers
+from the cursor position and dim placeholder styling. It requests `/status` only
+from a stable empty composer, checks the echoed command before Enter, and verifies
+the fresh Session ID and working directory against the running daemon. It opens
+no Accessible View, changes no focus or selection, and uses no clipboard.
+On macOS, when startup output was missed, it briefly changes the PTY width by one
+column and restores it to force a repaint without changing the editor layout or
+composer text. Restoration runs independently of the extension host and preserves
+an intervening user resize. Other platforms wait for fresh terminal output.
+
+For restored terminals, the editor must enable the companion's
+`terminalDataWriteEvent` and `terminalDimensions` proposed APIs. The macOS installer
+adds only `jmdurant.ai-account-switcher-resume` to `enable-proposed-api` in the
+editor's `argv.json`, preserving existing preferences and keeping the original in
+`argv.json.switcher-backup`. Fully quit and reopen the editor after this change;
+window reload alone does not reload startup arguments. Alternatively start the
+editor with `--enable-proposed-api jmdurant.ai-account-switcher-resume`. When the
+API is unavailable, fresh shell executions are still observed and the output log
+explains the missing capability. There is no UI-based fallback.
 
 The read-only client connects to an existing Unix daemon when available, since a
 separate app-server cannot read its loaded conversations. IDE-launched TUIs with

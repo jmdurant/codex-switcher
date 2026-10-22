@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,37 @@ const editors = [
   // standalone app has no editor CLI, so it is naturally excluded below.
   { name: "Antigravity (legacy IDE)", bundle: "Antigravity.app", id: "com.google.antigravity", cli: "antigravity" },
 ];
+
+export function enableTerminalOutputApi(argvPath) {
+  const original = existsSync(argvPath) ? readFileSync(argvPath, "utf8") : "{}";
+  // argv.json accepts comments and trailing commas. Preserve string contents
+  // while removing JSONC syntax before parsing the existing preferences.
+  const stringsAndComments = /"(?:\\.|[^"\\])*"|\/\/[^\r\n]*|\/\*[\s\S]*?\*\//g;
+  const json = original.replace(stringsAndComments, value => value.startsWith('"') ? value : " ")
+    .replace(/"(?:\\.|[^"\\])*"|,\s*[}\]]/g, value => value.startsWith('"') ? value : value.replace(",", ""));
+  const settings = JSON.parse(json);
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error(`Expected an object in ${argvPath}`);
+  const enabled = settings["enable-proposed-api"] ?? [];
+  if (!Array.isArray(enabled) || enabled.some(value => typeof value !== "string")) throw new Error(`Invalid enable-proposed-api in ${argvPath}`);
+  const extension = "jmdurant.ai-account-switcher-resume";
+  if (enabled.includes(extension)) return false;
+  settings["enable-proposed-api"] = [...enabled, extension];
+  mkdirSync(resolve(argvPath, ".."), { recursive: true });
+  const backup = `${argvPath}.switcher-backup`;
+  if (existsSync(argvPath) && !existsSync(backup)) writeFileSync(backup, original, { mode: 0o600 });
+  const temporary = `${argvPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, { mode: 0o600 });
+  renameSync(temporary, argvPath);
+  return true;
+}
+
+function editorArgvPath(cli) {
+  const name = cli.split("/").at(-1);
+  const directories = { code: ".vscode", "code-insiders": ".vscode-insiders", "antigravity-ide": ".antigravity-ide", antigravity: ".antigravity" };
+  const directory = directories[name];
+  if (!directory) throw new Error(`Unknown editor CLI ${name}`);
+  return join(homedir(), directory, "argv.json");
+}
 
 export function discoverEditors(appRoots = ["/Applications", join(homedir(), "Applications")], searchSystem = true) {
   const found = [];
@@ -60,12 +91,15 @@ export function installExtensions(vsix = join(root, "ide-extension", "ai-account
         throw new Error(`Editor did not report ${expected} after installation.`);
       }
       console.log(`Verified ${expected} in ${editor.name}.`);
+      if (enableTerminalOutputApi(editorArgvPath(editor.cli))) {
+        console.log(`Enabled silent terminal output for this companion in ${editor.name}. Fully quit and reopen the editor to activate it.`);
+      }
     } catch (error) {
       failures.push(`${editor.name}: ${error.message}`);
     }
   }
   if (failures.length) throw new Error(`Extension installation failed:\n${failures.join("\n")}`);
-  if (found.length) console.log("Reload open editor windows to activate the companion extension.");
+  if (found.length) console.log("Fully quit and reopen the editor to activate silent observation of restored terminals.");
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

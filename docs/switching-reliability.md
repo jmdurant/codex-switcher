@@ -48,14 +48,17 @@ value options require explicit linking when the original argument boundaries
 cannot be recovered. Shell expansions and ambiguous quoting are reported instead
 of replayed with changed meaning.
 
-Bridge protocol 2 rejects old companion hosts. Reload the editor after installing
-a companion update. Version 0.2.29 automatically identifies unlinked macOS/Linux
-terminals, including restored terminals: native ancestry establishes the terminal
-owner, then a stable empty composer permits a fixed `/status` request. The fresh
-response is read through the editor's Accessible View and verified against the
-running local daemon. Typed input and busy/dialog prompts defer identification;
-historical status text alone never authorizes a binding. The existing manual
-linking command remains available for unsupported terminal states.
+Bridge protocol 2 rejects old companion hosts. Version 0.2.30 observes raw
+terminal output silently and renders it in memory, including restored terminals.
+On macOS, a brief PTY width change and restoration refreshes a screen whose
+startup output was missed; a same-size SIGWINCH does not reliably repaint Codex.
+This preserves the composer and editor layout. Native ancestry establishes the terminal
+owner; a stable empty composer permits a fixed `/status` request, and its echoed
+command is checked before Enter. The returned ID is verified with the daemon.
+The installer enables the raw-output proposals for this extension only via
+`argv.json`; fully restart the editor for startup-argument changes. The previous
+Accessible View approach is removed. Identification diagnostics distinguish
+missing live output, a nonempty composer, changed input, and verification errors.
 
 The reader uses the existing Unix daemon socket when present. A separate app-server
 cannot read daemon-only loaded threads. Modern IDE-launched TUIs can report source

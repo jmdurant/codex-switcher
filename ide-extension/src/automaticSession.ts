@@ -1,51 +1,44 @@
-import { sessionIdFromStatus } from "./goal.ts";
+import type { TerminalSnapshot } from "./terminalScreen.ts";
 
-/** The buffer must belong to a terminal with exactly one native Codex descendant. */
 export interface AutomaticSessionTerminal {
   valid(): boolean;
-  read(): Promise<string | undefined>;
+  read(): Promise<TerminalSnapshot | undefined>;
   status(): void;
+  enter(): void;
   verify(id: string): Promise<boolean>;
   wait(ms: number): Promise<void>;
+  diagnostic?(reason: string): void;
 }
 
-/** Inspect only the current composer, never an old empty prompt in scrollback. */
-export function emptyCodexComposer(buffer: string): boolean {
-  const lines = buffer.trimEnd().split(/\r?\n/);
-  let index = lines.length - 1;
-  while (index >= 0 && !/^\s*›/.test(lines[index])) index--;
-  if (index < 0 || !/^\s*› Ask Codex to do anything\s*$/.test(lines[index])) return false;
-  const footer = lines.slice(index + 1).filter(line => line.trim());
-  return footer.length <= 2 && footer.every(line => /^\s*(?:gpt-[\w.-]+\b|\d+% context left\b)/i.test(line)) &&
-    !/esc to interrupt|tab to queue|Resume paused goal\?|Press enter to confirm/i.test(lines.slice(Math.max(0, index - 2)).join("\n"));
-}
-
-function statusCount(buffer: string): number {
-  return [...buffer.matchAll(/(?:^|\n)\s*(?:›\s*)?\/status\s*(?:\n|$)/g)].length;
-}
-
-/** Obtain fresh terminal-specific evidence even after shell execution events were lost. */
+/** Use only newly observed /status output; old scrollback never establishes identity. */
 export async function identifyAutomaticSession(terminal: AutomaticSessionTerminal): Promise<string | undefined> {
+  const defer = (reason: string) => { terminal.diagnostic?.(reason); return undefined; };
   if (!terminal.valid()) return;
   const before = await terminal.read();
-  if (!terminal.valid() || before === undefined || !emptyCodexComposer(before)) return;
+  if (!terminal.valid()) return;
+  if (!before) return defer("no_live_output");
+  // A user-requested status response in this live output stream is exact evidence too.
+  if (before.statusId && await terminal.verify(before.statusId) && terminal.valid()) return before.statusId;
+  if (before.composer !== "empty") return defer(before.composerReason ?? "composer_not_empty");
   await terminal.wait(150);
   const current = await terminal.read();
-  if (!terminal.valid() || current !== before || !emptyCodexComposer(current)) return;
-  // No await between checking the fresh empty composer and the fixed slash command.
+  // /status is available while Codex is working. Agent output may change while
+  // the user's composer stays empty; it must not prevent early identification.
+  if (!terminal.valid() || current?.composer !== "empty") return defer("composer_changed");
   terminal.status();
-  for (let attempt = 0; attempt < 12; attempt++) {
+  // Verify that the TUI echoed only our slash command before submitting it.
+  await terminal.wait(150);
+  const entered = await terminal.read();
+  if (!terminal.valid() || entered?.composer !== "status") return defer("status_input_changed");
+  terminal.enter();
+  for (let attempt = 0; attempt < 20; attempt++) {
     await terminal.wait(150);
     if (!terminal.valid()) return;
     const response = await terminal.read();
-    if (!terminal.valid() || response === undefined) return;
-    // A previous /status may describe another conversation. Require a newly
-    // rendered response to the command we just sent before using its ID.
-    if (statusCount(response) <= statusCount(before)) continue;
-    const panel = response.slice(response.lastIndexOf("/status") + 7);
-    const id = sessionIdFromStatus(panel);
-    if (!id || !/\bModel:\s*\S/.test(panel) || !/\bDirectory:\s*\S/.test(panel)) continue;
-    if (await terminal.verify(id) && terminal.valid()) return id;
-    return;
+    if (!terminal.valid() || !response) return;
+    if (response.statusRevision <= before.statusRevision || !response.statusId) continue;
+    if (await terminal.verify(response.statusId) && terminal.valid()) return response.statusId;
+    return defer("status_verification_failed");
   }
+  return defer("no_fresh_status_response");
 }

@@ -53,7 +53,7 @@ async function capacityScenario(change: string) {
   class Clock extends Date { static now() { return now; } }
   const module = { exports: {} as any };
   vm.runInNewContext(compiled.outputFiles[0].text + "\nmodule.exports.testPoll = pollCapacityRetries; module.exports.testNetworkPoll = pollNetworkGoalResumes; module.exports.blockCapacityRetries = () => { retryBlockedUntil = Date.now() + 120000; }; module.exports.setPendingGoal = (terminal, goal) => pendingGoals.set(terminal, { sessionId: goal.threadId, goal: captureGoal({...goal,status:'active'}), expiresAt: Date.now() + 60000, checking: false, timer: setTimeout(() => {}, 60000) });", {
-    module, exports: module.exports, process: { ...process, platform: "linux" }, console, Buffer, Date: Clock,
+    module, exports: module.exports, process: { ...process, platform: "linux" }, console, Buffer, performance, Date: Clock,
     require: (name: string) => name === "vscode" ? vscode : name === "node:os" ? { ...os, homedir: () => root } : require(name),
     setTimeout, clearTimeout, setInterval: () => 1, clearInterval() {},
     readTestGoal: () => goal, readTestTurn: () => turn, getTestOwners: () => []
@@ -185,7 +185,7 @@ async function scenario(options: {
   };
   const module = { exports: {} as any };
   vm.runInNewContext(compiled.outputFiles[0].text, {
-    module, exports: module.exports, process: options.autoDiscover ? { ...process, platform: "win32" } : process, console, Buffer,
+    module, exports: module.exports, process: options.autoDiscover ? { ...process, platform: "win32" } : process, console, Buffer, performance,
     require: (name: string) => name === "vscode" ? vscode : name === "node:os" ? { ...os, homedir: () => root } : require(name),
     setTimeout, clearTimeout,
     setInterval: (fn: () => void, ms: number) => { intervals.set(ms, fn); return ms; },

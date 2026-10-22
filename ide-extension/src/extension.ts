@@ -8,7 +8,8 @@ import { classifyCommand, isLastResumeCommand, resumeInvocation, sessionIdFromCo
 import { CodexReader } from "./codexRpc";
 import { discoverSessions, discoverUnixCodexProcesses, ownerForTerminal } from "./sessionDiscovery";
 import { identifyAutomaticSession } from "./automaticSession";
-import { readTerminalBuffer } from "./terminalBuffer";
+import { redrawTerminal } from "./terminalRedraw";
+import { readTerminalBuffer, startTerminalObservation, observeTerminalOutput } from "./terminalBuffer";
 import { GoalDialogCleanup } from "./goalDialogCleanup";
 import { GoalContinuationPreference } from "./goalPreference";
 import { RetryLedger, RetryPrompt, NetworkResumePrompt, CodexUpdatePrompt, overloaded, networkPermissionRevoked, retryDelay, goalKey } from "./capacityRetry";
@@ -281,6 +282,12 @@ async function bindAutomatically(terminal: vscode.Terminal, active: ActiveExecut
   };
   const binding = (async () => {
     output.appendLine(`Checking automatic session identification for Codex PID ${active.codexProcessId}.`);
+    // Recover the current composer after missed startup output. A repaint
+    // preserves existing input and does not open editor UI.
+    if ((await readTerminalBuffer(terminal))?.composer !== "empty" && valid()) {
+      await redrawTerminal(active.codexProcessId!, valid).catch(() => undefined);
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
     const id = await identifyAutomaticSession({
       valid,
       read: () => readTerminalBuffer(terminal),
@@ -288,13 +295,11 @@ async function bindAutomatically(terminal: vscode.Terminal, active: ActiveExecut
         output.appendLine(`Requesting /status automatically in Codex PID ${active.codexProcessId}.`);
         // Separate writes let the TUI process the slash command before Enter.
         terminal.sendText("/status", false);
-        automaticStatusEnter.add(terminal);
       },
+      enter: () => terminal.sendText("", true),
       verify: id => codexReader.isInteractiveSession(id, active.cwd),
-      wait: async ms => {
-        await new Promise(resolve => setTimeout(resolve, ms));
-        if (valid() && automaticStatusEnter.delete(terminal)) terminal.sendText("", true);
-      },
+      wait: ms => new Promise(resolve => setTimeout(resolve, ms)),
+      diagnostic: reason => output.appendLine(`Automatic identification deferred for Codex PID ${active.codexProcessId}: ${reason}.`),
     });
     if (!valid()) return;
     if (id) {
@@ -307,10 +312,8 @@ async function bindAutomatically(terminal: vscode.Terminal, active: ActiveExecut
     }
   })().catch(error => output.appendLine(`Automatic session identification failed: ${error instanceof Error ? error.message : "unknown error"}`));
   automaticBindings.set(terminal, binding);
-  try { await binding; } finally { automaticBindings.delete(terminal); automaticStatusEnter.delete(terminal); }
+  try { await binding; } finally { automaticBindings.delete(terminal); }
 }
-
-const automaticStatusEnter = new Set<vscode.Terminal>();
 
 async function recordResumeOutcome(outcomeBase: string | undefined, state: string): Promise<void> {
   if (!outcomeBase) return;
@@ -358,6 +361,7 @@ async function observeExecution(terminal: vscode.Terminal, active: ActiveExecuti
   try {
     for await (const chunk of active.execution.read()) {
       if (activeExecutions.get(terminal) !== active) return;
+      observeTerminalOutput(terminal, chunk);
       const revision = active.outputRevision = (active.outputRevision ?? 0) + 1;
       dialogCleaners.get(terminal)?.observe(chunk);
       active.retryPrompt?.observe(chunk);
@@ -981,6 +985,7 @@ export function activate(context: vscode.ExtensionContext): void {
     output.appendLine(`Disabled in remote extension host: ${vscode.env.remoteName}.`);
     return;
   }
+  startTerminalObservation(context, line => output.appendLine(line));
 
   bridgeRoot = path.join(os.homedir(), ".codex-switcher", "ide-bridge");
   clientId = `${process.pid}-${crypto.randomUUID()}`;
@@ -1118,7 +1123,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.window.onDidCloseTerminal((terminal) => {
       automaticBindingAfter.delete(terminal);
-      automaticStatusEnter.delete(terminal);
       resumeAttempts.delete(terminal);
       retryPending.delete(terminal);
       networkResumePending.delete(terminal);
