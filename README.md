@@ -250,6 +250,13 @@ the last 7 days, while keeping the normal rate-limit refresh flow separate.
 
 ## Safe Account Switching
 
+**Remove account** forgets the saved profile without validating its tokens or
+changing the current Codex login and running sessions. Removing the selected
+profile clears the saved selection; activate another account explicitly when
+ready. Interrupted switch records that reference removed profiles are retired
+without restoring their credentials. Expired or deleted ChatGPT accounts can
+therefore be removed even when local switch recovery is pending.
+
 The desktop dashboard automatically detects the current Codex login from
 `$CODEX_HOME/auth.json` (normally `~/.codex/auth.json`) on startup, when focused,
 and every 30 seconds. **Add current login** saves that session in the switcher

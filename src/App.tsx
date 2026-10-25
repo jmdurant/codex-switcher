@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAccounts } from "./hooks/useAccounts";
 import { useForceCloseCodexProcesses } from "./hooks/useForceCloseCodexProcesses";
 import { AccountCard, AddAccountModal, AntigravityAccounts, ClaudeAccounts, CurrentCodexLogin, UpdateChecker } from "./components";
+import { RemoveAccountModal } from "./components/RemoveAccountModal";
 import type { AccountWithUsage, CodexProcessInfo, DockDisplayMode, UsageInfo } from "./types";
 import {
   exportFullBackupFile,
@@ -654,19 +655,8 @@ function App() {
     return switched;
   };
 
-  const handleDelete = async (accountId: string) => {
-    if (deleteConfirmId !== accountId) {
-      setDeleteConfirmId(accountId);
-      setTimeout(() => setDeleteConfirmId(null), 3000);
-      return;
-    }
-
-    try {
-      await deleteAccount(accountId);
-      setDeleteConfirmId(null);
-    } catch (err) {
-      console.error("Failed to delete account:", err);
-    }
+  const handleDelete = (accountId: string) => {
+    setDeleteConfirmId(accountId);
   };
 
   const handleRefresh = async () => {
@@ -795,9 +785,9 @@ function App() {
   const autoQuota = useAutoQuotaSwitch({
     enabled: autoQuotaEnabled,
     policy: autoQuotaPolicy,
-    busy: switchingId !== null || isForceClosingCodex || forceCloseConfirmOpen || loading || staggerRunning,
+    busy: switchingId !== null || isForceClosingCodex || forceCloseConfirmOpen || deleteConfirmId !== null || loading || staggerRunning,
     busyReason: switchingId !== null ? "switch_in_progress" : isForceClosingCodex ? "closing_codex" :
-      forceCloseConfirmOpen ? "close_confirmation_open" : loading ? "loading_accounts" :
+      forceCloseConfirmOpen ? "close_confirmation_open" : deleteConfirmId !== null ? "account_removal_open" : loading ? "loading_accounts" :
       staggerRunning ? "staggered_warmup" : undefined,
     accounts,
     onSwitch: async (accountId, cancelled, trace, expectedActive) => {
@@ -2406,11 +2396,14 @@ function App() {
         </div>
       )}
 
-      {/* Delete Confirmation Toast */}
       {deleteConfirmId && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-3 bg-red-600 text-white rounded-lg shadow-lg text-sm">
-          Click delete again to confirm removal
-        </div>
+        <RemoveAccountModal
+          key={deleteConfirmId}
+          accountName={maskedAccounts.has(deleteConfirmId) ? "this account" : accounts.find(account => account.id === deleteConfirmId)?.name ?? "this account"}
+          active={accounts.some(account => account.id === deleteConfirmId && account.is_active)}
+          onRemove={() => deleteAccount(deleteConfirmId)}
+          onClose={() => setDeleteConfirmId(null)}
+        />
       )}
 
       {forceCloseConfirmOpen && (

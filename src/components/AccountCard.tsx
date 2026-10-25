@@ -540,9 +540,11 @@ export function AccountCard({
           </svg>
         </button>
         <button
+          type="button"
           onClick={onDelete}
           className="h-9 w-9 flex items-center justify-center text-sm rounded-lg bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 text-red-600 dark:text-red-300 transition-colors"
           title="Remove account"
+          aria-label="Remove account"
         >
           ✕
         </button>

@@ -3,8 +3,8 @@
 use crate::auth::{
     add_account, create_chatgpt_account_from_refresh_token,
     ensure_chatgpt_tokens_fresh_locked, get_active_account, import_from_auth_json,
-    import_from_auth_json_contents, load_accounts, read_current_auth, remove_account_from_store,
-    save_accounts, sync_active_account_tokens, with_accounts_store,
+    import_from_auth_json_contents, load_accounts, read_current_auth,
+    save_accounts, sync_active_account_tokens,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -282,7 +282,7 @@ pub(crate) async fn coordinated_switch(
     Ok(outcome)
 }
 
-/// Remove an account
+/// Forget a saved profile without changing the live Codex login.
 #[tauri::command]
 pub async fn delete_account(account_id: String) -> Result<(), String> {
     let _switch_guard = SWITCH_SEQUENCE_LOCK.lock().await;
@@ -290,22 +290,7 @@ pub async fn delete_account(account_id: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?.join("switch-sequence.lock")).map_err(|e| e.to_string())?;
     let _auth_guard = crate::auth::operation::lock_auth().await.map_err(|e| e.to_string())?;
     let files = super::activation::ActivationFiles::local().map_err(|e| e.to_string())?;
-    super::activation::recover(&files, &super::activation::Daemon).await.map_err(|e| format!("{e:#}"))?;
-    let store = load_accounts().map_err(|e| e.to_string())?;
-    let account = store.accounts.iter().find(|account|account.id == account_id).ok_or("Account not found")?;
-    if store.active_account_id.as_deref() == Some(&account_id) {
-        ensure_codex_not_running()?;
-        if let Some(replacement) = store.accounts.iter().find(|account|account.id != account_id) {
-            let replacement = ensure_chatgpt_tokens_fresh_locked(replacement).await.map_err(|e| e.to_string())?;
-            super::activation::activate(&files, &replacement, &super::activation::Daemon).await.map_err(|e|format!("{e:#}"))?;
-        } else {
-            super::activation::deactivate(&files, account, &super::activation::Daemon).await.map_err(|e|format!("{e:#}"))?;
-        }
-    }
-    with_accounts_store(|store| {
-        remove_account_from_store(store, &account_id)?;
-        Ok(())
-    }).map_err(|e| e.to_string())
+    super::activation::forget_account(&files, &account_id).map_err(|e| format!("{e:#}"))
 }
 
 /// Rename an account

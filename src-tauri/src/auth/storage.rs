@@ -314,18 +314,12 @@ pub fn remove_account(account_id: &str) -> Result<()> {
     })
 }
 
-#[derive(Debug)]
-pub(crate) struct AccountRemoval {
-    pub removed_is_active: bool,
-    pub replacement: Option<StoredAccount>,
-}
-
-/// Apply account deletion to an in-memory store and return the auth handoff
-/// required by callers that also manage the live Codex auth.json file.
+/// Forget a saved profile. Selection is cleared rather than activating another
+/// account; removal must not change the live Codex login or require valid tokens.
 pub(crate) fn remove_account_from_store(
     store: &mut AccountsStore,
     account_id: &str,
-) -> Result<AccountRemoval> {
+) -> Result<()> {
     if !store
         .accounts
         .iter()
@@ -335,26 +329,13 @@ pub(crate) fn remove_account_from_store(
     }
 
     let removed_is_active = store.active_account_id.as_deref() == Some(account_id);
-    let replacement = removed_is_active
-        .then(|| {
-            store
-                .accounts
-                .iter()
-                .find(|account| account.id != account_id)
-                .cloned()
-        })
-        .flatten();
-
     store.accounts.retain(|account| account.id != account_id);
     store.masked_account_ids.retain(|id| id != account_id);
     if removed_is_active {
-        store.active_account_id = replacement.as_ref().map(|account| account.id.clone());
+        store.active_account_id = None;
     }
 
-    Ok(AccountRemoval {
-        removed_is_active,
-        replacement,
-    })
+    Ok(())
 }
 
 /// Update the active account ID
@@ -752,7 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_active_account_selects_replacement_and_cleans_masked_state() {
+    fn deleting_active_account_clears_selection_and_cleans_masked_state() {
         let account_a = account("A", "workspace-a", "a");
         let account_a_id = account_a.id.clone();
         let account_b = account("B", "workspace-b", "b");
@@ -764,20 +745,9 @@ mod tests {
             ..AccountsStore::default()
         };
 
-        let removal = remove_account_from_store(&mut store, &account_a_id).unwrap();
+        remove_account_from_store(&mut store, &account_a_id).unwrap();
 
-        assert!(removal.removed_is_active);
-        assert_eq!(
-            removal
-                .replacement
-                .as_ref()
-                .map(|account| account.id.as_str()),
-            Some(account_b_id.as_str())
-        );
-        assert_eq!(
-            store.active_account_id.as_deref(),
-            Some(account_b_id.as_str())
-        );
+        assert!(store.active_account_id.is_none());
         assert_eq!(store.masked_account_ids, vec![account_b_id]);
         assert_eq!(store.accounts.len(), 1);
     }
@@ -793,10 +763,7 @@ mod tests {
             ..AccountsStore::default()
         };
 
-        let removal = remove_account_from_store(&mut store, &account_id).unwrap();
-
-        assert!(removal.removed_is_active);
-        assert!(removal.replacement.is_none());
+        remove_account_from_store(&mut store, &account_id).unwrap();
         assert!(store.accounts.is_empty());
         assert!(store.active_account_id.is_none());
         assert!(store.masked_account_ids.is_empty());
@@ -815,10 +782,7 @@ mod tests {
             ..AccountsStore::default()
         };
 
-        let removal = remove_account_from_store(&mut store, &account_b_id).unwrap();
-
-        assert!(!removal.removed_is_active);
-        assert!(removal.replacement.is_none());
+        remove_account_from_store(&mut store, &account_b_id).unwrap();
         assert_eq!(
             store.active_account_id.as_deref(),
             Some(account_a_id.as_str())

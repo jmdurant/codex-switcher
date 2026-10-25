@@ -120,6 +120,7 @@ pub(crate) async fn recover(files: &ActivationFiles, runtime: &impl RuntimeAuth)
     if journal.version != 1 { bail!("Unsupported pending switch record"); }
     if journal.auth_path != files.auth { bail!("Pending switch belongs to a different CODEX_HOME; reopen the switcher with that home to recover it"); }
     let store = files.store()?;
+    if retire_removed_account_switch(files, &journal, &store)? { return Ok(()); }
     if store.active_account_id.as_deref() == journal.next_active()
         && same_credentials(files.auth()?.as_deref(), journal.next_auth()) {
         // Selection was committed before shutdown. Complete verification instead
@@ -132,6 +133,37 @@ pub(crate) async fn recover(files: &ActivationFiles, runtime: &impl RuntimeAuth)
         bail!("The selected account changed since the interrupted switch; recovery requires reconciliation");
     }
     rollback(files, &journal, runtime).await
+}
+
+// A profile deletion is committed atomically before its obsolete journal is
+// retired. Recovery repeats this cleanup after a crash, without reactivating
+// credentials belonging to a profile the user has removed.
+fn retire_removed_account_switch(files: &ActivationFiles, journal: &Journal, store: &AccountsStore) -> Result<bool> {
+    let contains = |id: &str| store.accounts.iter().any(|account| account.id == id);
+    if !contains(&journal.target.id) || journal.previous_active.as_deref().is_some_and(|id| !contains(id)) {
+        fs::remove_file(&files.journal)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Caller holds the account-operation locks. This does not read, validate,
+/// refresh, replace, or activate the live credentials.
+pub(crate) fn forget_account(files: &ActivationFiles, account_id: &str) -> Result<()> {
+    auth::storage::with_accounts_store_at(&files.accounts, |store| {
+        auth::remove_account_from_store(store, account_id)
+    })?;
+    // Failed cleanup must not report a successful saved-profile deletion as a
+    // failure. recover() safely retries it before any future activation.
+    let _ = (|| -> Result<()> {
+        if !files.journal.try_exists()? { return Ok(()); }
+        let journal: Journal = serde_json::from_slice(&fs::read(&files.journal)?)?;
+        if journal.version == 1 && journal.auth_path == files.auth {
+            retire_removed_account_switch(files, &journal, &files.store()?)?;
+        }
+        Ok(())
+    })();
+    Ok(())
 }
 
 /// Explicitly capturing the current login resolves a competing external login.
@@ -153,10 +185,6 @@ pub(crate) fn accept_captured_login(files: &ActivationFiles) -> Result<()> {
 
 pub(crate) async fn activate(files: &ActivationFiles, account: &StoredAccount, runtime: &impl RuntimeAuth) -> Result<bool> {
     transition(files, account, runtime, false).await
-}
-
-pub(crate) async fn deactivate(files: &ActivationFiles, account: &StoredAccount, runtime: &impl RuntimeAuth) -> Result<()> {
-    transition(files, account, runtime, true).await.map(|_| ())
 }
 
 async fn transition(files: &ActivationFiles, account: &StoredAccount, runtime: &impl RuntimeAuth, clear: bool) -> Result<bool> {
@@ -318,12 +346,12 @@ mod tests {
         assert!(runtime.calls.lock().unwrap().iter().any(|call|call == "signed out"));
     }
     #[tokio::test]
-    async fn deleting_last_active_account_clears_runtime_file_and_selection() {
+    async fn explicit_deactivation_clears_runtime_file_and_selection() {
         let (_dir, files, _) = fixture();
         let store = files.store().unwrap();
         let account = store.accounts.iter().find(|a|Some(&a.id)==store.active_account_id.as_ref()).unwrap();
         let runtime = FakeRuntime {fail:false,calls:Mutex::new(vec![])};
-        deactivate(&files,account,&runtime).await.unwrap();
+        transition(&files,account,&runtime,true).await.unwrap();
         assert!(files.auth().unwrap().is_none());
         assert!(files.store().unwrap().active_account_id.is_none());
         assert!(!files.journal.exists());
@@ -337,5 +365,121 @@ mod tests {
         assert!(error.to_string().contains("different CODEX_HOME"));
         assert!(!other.auth.exists());
         assert!(files.journal.exists());
+    }
+
+    #[tokio::test]
+    async fn forgetting_stale_active_profile_preserves_external_login_and_allows_next_switch() {
+        let (_dir, files, target) = fixture();
+        let active_id = files.store().unwrap().active_account_id.unwrap();
+        let runtime = MutatingRuntime {files:&files,action:"external_login"};
+        assert!(activate(&files,&target,&runtime).await.is_err());
+        assert!(recover(&files,&runtime).await.is_err());
+        let external = files.auth().unwrap();
+
+        forget_account(&files,&active_id).unwrap();
+
+        assert_eq!(files.auth().unwrap(),external);
+        let store = files.store().unwrap();
+        assert_eq!(store.accounts.len(),1);
+        assert_eq!(store.accounts[0].id,target.id);
+        assert!(store.active_account_id.is_none());
+        assert!(!files.journal.exists());
+        let runtime = FakeRuntime {fail:false,calls:Mutex::new(vec![])};
+        assert!(activate(&files,&target,&runtime).await.unwrap());
+        assert_eq!(runtime.calls.lock().unwrap().as_slice(),["target"]);
+    }
+
+    #[test]
+    fn forgetting_last_profile_preserves_live_credentials_without_validation() {
+        let (_dir, files, target) = fixture();
+        let original = files.auth().unwrap();
+        auth::storage::with_accounts_store_at(&files.accounts, |store| {
+            store.accounts.retain(|account|account.id != target.id);
+            // An unusable stored credential must not prevent forgetting it.
+            store.accounts[0].auth_data = crate::types::AuthData::ApiKey {key:String::new()};
+            Ok(())
+        }).unwrap();
+        let selected = files.store().unwrap().active_account_id.unwrap();
+        forget_account(&files,&selected).unwrap();
+        assert_eq!(files.auth().unwrap(),original);
+        assert!(files.store().unwrap().accounts.is_empty());
+        assert!(files.store().unwrap().active_account_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_removal_retires_obsolete_switch_without_runtime_calls() {
+        let (_dir, files, target) = fixture();
+        let runtime = MutatingRuntime {files:&files,action:"external_login"};
+        assert!(activate(&files,&target,&runtime).await.is_err());
+        let external = files.auth().unwrap();
+        // Simulate shutdown after committing profile removal, before cleanup.
+        auth::storage::with_accounts_store_at(&files.accounts, |store| {
+            auth::remove_account_from_store(store,&target.id)
+        }).unwrap();
+        assert!(files.journal.exists());
+        let runtime = FakeRuntime {fail:true,calls:Mutex::new(vec![])};
+        recover(&files,&runtime).await.unwrap();
+        assert!(runtime.calls.lock().unwrap().is_empty());
+        assert_eq!(files.auth().unwrap(),external);
+        assert!(!files.journal.exists());
+    }
+
+    #[tokio::test]
+    async fn forgetting_unrelated_profile_preserves_pending_recovery() {
+        let (_dir, files, target) = fixture();
+        let unrelated = StoredAccount::new_api_key("unrelated".into(),"unused".into());
+        auth::storage::with_accounts_store_at(&files.accounts, |store| {
+            store.accounts.push(unrelated.clone()); Ok(())
+        }).unwrap();
+        let runtime = MutatingRuntime {files:&files,action:"external_login"};
+        assert!(activate(&files,&target,&runtime).await.is_err());
+        let external = files.auth().unwrap();
+        let journal = fs::read(&files.journal).unwrap();
+        let selected = files.store().unwrap().active_account_id;
+        forget_account(&files,&unrelated.id).unwrap();
+        assert_eq!(files.auth().unwrap(),external);
+        assert_eq!(files.store().unwrap().active_account_id,selected);
+        assert_eq!(fs::read(&files.journal).unwrap(),journal);
+        assert!(recover(&files,&runtime).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn forgetting_profile_never_retires_another_codex_homes_journal() {
+        let (_dir, files, target) = fixture();
+        assert!(activate(&files,&target,&MutatingRuntime {files:&files,action:"fail_all"}).await.is_err());
+        let journal = fs::read(&files.journal).unwrap();
+        let original = files.auth().unwrap();
+        let other = ActivationFiles {auth:files.auth.with_file_name("other-auth.json"),accounts:files.accounts.clone(),journal:files.journal.clone()};
+        forget_account(&other,&target.id).unwrap();
+        assert_eq!(fs::read(&files.journal).unwrap(),journal);
+        assert_eq!(files.auth().unwrap(),original);
+        assert!(!other.auth.exists());
+    }
+
+    #[test]
+    fn invalid_recovery_record_cannot_block_saved_profile_removal() {
+        let (_dir, files, target) = fixture();
+        fs::write(&files.journal,b"invalid journal").unwrap();
+        let original = files.auth().unwrap();
+        forget_account(&files,&target.id).unwrap();
+        assert_eq!(files.auth().unwrap(),original);
+        assert!(files.store().unwrap().accounts.iter().all(|account|account.id != target.id));
+        assert_eq!(fs::read(&files.journal).unwrap(),b"invalid journal");
+    }
+
+    #[test]
+    fn forgetting_active_profile_with_pending_reactivation_preserves_newer_login() {
+        let (_dir, files, _) = fixture();
+        let store = files.store().unwrap();
+        let active = store.accounts.iter().find(|a|Some(&a.id)==store.active_account_id.as_ref()).unwrap();
+        let saved = files.auth().unwrap();
+        files.save_journal(&Journal {version:1,auth_path:files.auth.clone(),target:active.clone(),
+            previous_active:Some(active.id.clone()),previous_auth:saved.clone(),target_auth:saved.unwrap(),activation_started:true,clear:false}).unwrap();
+        auth::atomic::write_private(&files.auth,br#"{"OPENAI_API_KEY":"newer-login"}"#).unwrap();
+        let external = files.auth().unwrap();
+        forget_account(&files,&active.id).unwrap();
+        assert_eq!(files.auth().unwrap(),external);
+        assert!(!files.journal.exists());
+        assert!(files.store().unwrap().active_account_id.is_none());
     }
 }
