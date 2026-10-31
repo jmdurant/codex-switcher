@@ -1,5 +1,14 @@
 # AI Account Switcher Resume
 
+## Linux terminal recovery (0.2.32)
+
+Automatic identification can repaint a Linux Codex PTY through `/proc` and
+`stty -F`, matching the existing macOS recovery. The temporary width change is
+restored, and concurrent user resizes take precedence. Start the editor with
+`--enable-proposed-api jmdurant.ai-account-switcher-resume` to observe restored
+terminal output and dimensions; restart the editor after changing this flag.
+
+
 ## Switching reliability (0.2.26)
 
 - Exact IDs come from an explicit `codex resume <UUID>`, verified `/status`

@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import test from "node:test";
 import { redrawTerminal } from "../src/terminalRedraw.ts";
 
-test("macOS recovery repaints a real PTY, restores its size, and respects a concurrent resize", {skip: process.platform !== "darwin"}, async () => {
+test("Unix recovery repaints a real PTY, restores its size, and respects a concurrent resize", {skip: !["darwin", "linux"].includes(process.platform)}, async () => {
   // This terminal belongs only to the test; it has no editor or user input.
   const child = spawn("/usr/bin/python3", ["-u", "-c", `
 import os, pty, fcntl, termios, struct, signal, time, json
@@ -39,9 +39,9 @@ while True: time.sleep(1)
     output = "";
     const repaint = redrawTerminal(pid, () => true);
     await until(() => rows().some(row => row.columns === 99));
-    await promisify(execFile)("/bin/stty", ["-f", tty, "columns", "130"]);
+    await promisify(execFile)(process.platform === "linux" ? "/usr/bin/stty" : "/bin/stty", [process.platform === "linux" ? "-F" : "-f", tty, "columns", "130"]);
     await repaint;
-    const size = await promisify(execFile)("/bin/stty", ["-f", tty, "size"]);
+    const size = await promisify(execFile)(process.platform === "linux" ? "/usr/bin/stty" : "/bin/stty", [process.platform === "linux" ? "-F" : "-f", tty, "size"]);
     assert.equal(size.stdout.trim(), "30 130");
   } finally {
     child.kill();
